@@ -51,13 +51,11 @@ def get_fore_back_pixels(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray,
     :return: foreground and background pixels masks.
     """
 
-    image = img.reshape(-1, 3)
-
     fore_mask = ((mask == 1) | (mask == 3)).reshape(-1)
     back_mask = ((mask == 0) | (mask == 2)).reshape(-1)
 
-    fore_image = image[fore_mask]
-    back_image = image[back_mask]
+    fore_image = img[fore_mask]
+    back_image = img[back_mask]
 
     return fore_image, back_image
 
@@ -70,7 +68,9 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
     :param n_components: number of Gaussian mixtures to create.
     :return: initialized foreground and background Gaussian Mixture Models.
     """
-    fore_image, back_image = get_fore_back_pixels(img=img, mask=mask)
+    image = img.reshape(-1, 3)
+
+    fore_image, back_image = get_fore_back_pixels(img=image, mask=mask)
 
     fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_image)
     back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_image)
@@ -86,9 +86,58 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
     return bgGMM, fgGMM
 
 
+def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int = 5) -> GaussianMixture:
+    """
+    helper function
+    calculations of weights, means, and covariances for the Gaussian Mixture Models, then update them.
+    :param img: RGB image.
+    :param gmm: Gaussian Mixture Model.
+    :param n_components: number of Gaussian mixtures to create.
+    :return: updated Gaussian Mixture Model (mean, weights, covariances).
+    """
+    predictions = gmm.predict_proba(img)
+
+    weights = np.sum(predictions, axis=0)
+
+    # means
+    Nk = weights[:, np.newaxis]
+    expectancy = np.dot(predictions.T, img)
+    means = expectancy / Nk
+
+    # covariance
+    covariances = []
+    for k in range(n_components):
+        diff = img - means[k]
+        cov = np.dot((predictions[:, k] * diff.T), diff) / weights[k]
+        covariances.append(cov)
+
+    weights /= weights.sum()
+
+    # model update
+    gmm.means_ = means
+    gmm.covariances_ = covariances
+    gmm.weights_ = weights
+    gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
+
+    return gmm
+
+
 def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture)\
         -> tuple[GaussianMixture, GaussianMixture]:
+    """
+    updates foreground and background Gaussian Mixture Models by new mask.
+    :param img: RGB image.
+    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
+    :param bgGMM: background Gaussian Mixture Model.
+    :param fgGMM: foreground Gaussian Mixture Model.
+    :return: updated foreground and background Gaussian Mixture Models.
+    """
+    image = img.reshape(-1, 3)
 
+    fore_image, back_image = get_fore_back_pixels(img=image, mask=mask)
+
+    bgGMM = update_parameters(img=back_image, gmm=bgGMM)
+    fgGMM = update_parameters(img=fore_image, gmm=fgGMM)
 
     return bgGMM, fgGMM
 
