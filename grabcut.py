@@ -1,8 +1,11 @@
-import numpy as np
 import cv2
 import argparse
-from sklearn.mixture import GaussianMixture
+import numpy as np
+import igraph as ig
 from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+
+EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
 
 GC_BGD = 0  # Hard bg pixel
 GC_FGD = 1  # Hard fg pixel, will not be used
@@ -93,7 +96,7 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     :param img: RGB image.
     :param gmm: Gaussian Mixture Model.
     :param n_components: number of Gaussian mixtures to create.
-    :return: updated Gaussian Mixture Model (mean, weights, covariances).
+    :return: updated Gaussian Mixture Model (mean, wghts, covariances).
     """
     predictions = gmm.predict_proba(img)
 
@@ -142,8 +145,61 @@ def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM
     return bgGMM, fgGMM
 
 
-def calculate_mincut(img, mask, bgGMM, fgGMM):
-    # TODO: implement energy (cost) calculation step and mincut
+def calculate_beta(img: np.ndarray) -> float:
+    """
+
+    :param img:
+    :return:
+    """
+    height, weight, _ = img.shape
+    beta = 0
+    for y in range(height):
+        for x in range(weight):
+            for dy, dx in EIGHT_DIR:
+                neighbor_y, neighbor_x = y + dy, x + dx
+                # ignores out of range neighbors
+                if 0 <= neighbor_y < height and 0 <= neighbor_x < weight:
+                    beta += np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2)
+
+    beta /= 2 * height * weight * 8
+    return 1 / (2 * beta)
+
+
+def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
+    """
+
+    :param img:
+    :param beta:
+    :return:
+    """
+    height, width, _ = img.shape
+    N_link_weights = {}
+    for x in range(width):
+        for y in range(height):
+            for dx, dy in EIGHT_DIR:
+                neighbor_x, neighbor_y = x + dx, y + dy
+                if 0 <= neighbor_x < width and 0 <= neighbor_y < height:
+                    weight = np.exp(-beta * np.sum((img[x, y] - img[neighbor_x, neighbor_y]) ** 2))
+                    weight *= 50 / np.sqrt(abs(dy)+abs(dx))
+                    N_link_weights[(x, y, neighbor_x, neighbor_y)] = weight
+
+    return N_link_weights
+
+
+def calculate_T_link_weights(img: np.ndarray,
+                             bgGMM: GaussianMixture,
+                             fgGMM: GaussianMixture) -> tuple[dict, dict]:
+    # ?????????????
+    height, width, _ = img.shape
+    fg_probs = fgGMM.predict_proba(img.reshape(-1, 3))
+    bg_probs = bgGMM.predict_proba(img.reshape(-1, 3))
+    fg_probs = np.max(fg_probs, axis=1).reshape(height, width)
+    bg_probs = np.max(bg_probs, axis=1).reshape(height, width)
+    return fg_probs, bg_probs
+
+
+def calculate_mincut(img:np.ndarray, mask:np.ndarray, bgGMM:GaussianMixture, fgGMM:GaussianMixture):
+
     min_cut = [[], []]
     energy = 0
     return min_cut, energy
