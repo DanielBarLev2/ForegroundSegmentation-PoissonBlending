@@ -1,11 +1,13 @@
 import numpy as np
 import cv2
 import argparse
+from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans
 
-GC_BGD = 0 # Hard bg pixel
-GC_FGD = 1 # Hard fg pixel, will not be used
-GC_PR_BGD = 2 # Soft bg pixel
-GC_PR_FGD = 3 # Soft fg pixel
+GC_BGD = 0  # Hard bg pixel
+GC_FGD = 1  # Hard fg pixel, will not be used
+GC_PR_BGD = 2  # Soft bg pixel
+GC_PR_FGD = 3  # Soft fg pixel
 
 
 # Define the GrabCut algorithm function
@@ -15,19 +17,19 @@ def grabcut(img, rect, n_iter=5):
     mask.fill(GC_BGD)
     x, y, w, h = rect
 
-    # Convert from absolute cordinates
+    # Convert from absolute coordinates
     w -= x
     h -= y
 
-    #Initalize the inner square to Foreground
-    mask[y:y+h, x:x+w] = GC_PR_FGD
-    mask[rect[1]+rect[3]//2, rect[0]+rect[2]//2] = GC_FGD
+    # Initialize the inner square to Foreground
+    mask[y:y + h, x:x + w] = GC_PR_FGD
+    mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = GC_FGD
 
     bgGMM, fgGMM = initalize_GMMs(img, mask)
 
     num_iters = 1000
     for i in range(num_iters):
-        #Update GMM
+        # Update GMM
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM)
@@ -41,10 +43,32 @@ def grabcut(img, rect, n_iter=5):
     return mask, bgGMM, fgGMM
 
 
-def initalize_GMMs(img, mask):
-    # TODO: implement initalize_GMMs
-    bgGMM = None
-    fgGMM = None
+def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
+    """
+     Initialized GMMs required for the GrabCut algorithm.
+    :param img: RGB image.
+    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
+    :param n_components: number of Gaussian mixtures to create.
+    :return:
+    """
+    image = img.reshape(-1, 3)
+
+    fore_mask = ((mask == 1) | (mask == 3)).reshape(-1)
+    back_mask = ((mask == 0) | (mask == 2)).reshape(-1)
+
+    fore_image = image[fore_mask]
+    back_image = image[back_mask]
+
+    fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_image)
+    back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_image)
+
+    fgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
+    fgGMM.means_ = fore_kmeans.cluster_centers_
+    fgGMM.fit(fore_image)
+
+    bgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
+    bgGMM.means_ = back_kmeans.cluster_centers_
+    bgGMM.fit(back_image)
 
     return bgGMM, fgGMM
 
@@ -78,6 +102,7 @@ def cal_metric(predicted_mask, gt_mask):
 
     return 100, 100
 
+
 def parse():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
@@ -87,10 +112,11 @@ def parse():
     parser.add_argument('--rect', type=str, default='1,1,100,100', help='if you wish change the rect (x,y,w,h')
     return parser.parse_args()
 
+
 if __name__ == '__main__':
     # Load an example image and define a bounding box around the object of interest
     args = parse()
-
+    print(args)
 
     if args.input_img_path == '':
         input_path = f'data/imgs/{args.input_name}.jpg'
@@ -100,8 +126,7 @@ if __name__ == '__main__':
     if args.use_file_rect:
         rect = tuple(map(int, open(f"data/bboxes/{args.input_name}.txt", "r").read().split(' ')))
     else:
-        rect = tuple(map(int,args.rect.split(',')))
-
+        rect = tuple(map(int, args.rect.split(',')))
 
     img = cv2.imread(input_path)
 
