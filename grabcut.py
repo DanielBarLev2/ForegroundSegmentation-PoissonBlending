@@ -43,14 +43,14 @@ def grabcut(img, rect, n_iter=5):
     return mask, bgGMM, fgGMM
 
 
-def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
+def get_fore_back_pixels(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-     Initialized GMMs required for the GrabCut algorithm.
+    helper function
     :param img: RGB image.
     :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
-    :param n_components: number of Gaussian mixtures to create.
-    :return:
+    :return: foreground and background pixels masks.
     """
+
     image = img.reshape(-1, 3)
 
     fore_mask = ((mask == 1) | (mask == 3)).reshape(-1)
@@ -58,6 +58,19 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
 
     fore_image = image[fore_mask]
     back_image = image[back_mask]
+
+    return fore_image, back_image
+
+
+def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
+    """
+     Initialized Gaussian Mixture Models required for the GrabCut algorithm.
+    :param img: RGB image.
+    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
+    :param n_components: number of Gaussian mixtures to create.
+    :return: initialized foreground and background Gaussian Mixture Models.
+    """
+    fore_image, back_image = get_fore_back_pixels(img=img, mask=mask)
 
     fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_image)
     back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_image)
@@ -73,9 +86,10 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
     return bgGMM, fgGMM
 
 
-# Define helper functions for the GrabCut algorithm
-def update_GMMs(img, mask, bgGMM, fgGMM):
-    # TODO: implement GMM component assignment step
+def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture)\
+        -> tuple[GaussianMixture, GaussianMixture]:
+
+
     return bgGMM, fgGMM
 
 
