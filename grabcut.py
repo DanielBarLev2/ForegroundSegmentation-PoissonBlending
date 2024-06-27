@@ -30,12 +30,14 @@ def grabcut(img, rect, n_iter=5):
 
     bgGMM, fgGMM = initalize_GMMs(img, mask)
 
+    beta = calculate_beta(img=img)
+
     num_iters = 1000
     for i in range(num_iters):
         # Update GMM
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
-        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM)
+        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, beta)
 
         mask = update_mask(mincut_sets, mask)
 
@@ -174,35 +176,118 @@ def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
     """
     height, width, _ = img.shape
     N_link_weights = {}
-    for x in range(width):
-        for y in range(height):
+
+    for y in range(height):
+        for x in range(width):
             for dx, dy in EIGHT_DIR:
                 neighbor_x, neighbor_y = x + dx, y + dy
                 if 0 <= neighbor_x < width and 0 <= neighbor_y < height:
-                    weight = np.exp(-beta * np.sum((img[x, y] - img[neighbor_x, neighbor_y]) ** 2))
-                    weight *= 50 / np.sqrt(abs(dy)+abs(dx))
-                    N_link_weights[(x, y, neighbor_x, neighbor_y)] = weight
+                    try:
+                        weight = np.exp(-beta * np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2))
+                        weight *= 50 / np.sqrt(abs(dy) + abs(dx))
+                    except:
+                        print()
+
+                    N_link_weights[(y, x, neighbor_y, neighbor_x)] = weight
 
     return N_link_weights
 
 
-def calculate_T_link_weights(img: np.ndarray,
-                             bgGMM: GaussianMixture,
-                             fgGMM: GaussianMixture) -> tuple[dict, dict]:
-    # ?????????????
-    height, width, _ = img.shape
-    fg_probs = fgGMM.predict_proba(img.reshape(-1, 3))
-    bg_probs = bgGMM.predict_proba(img.reshape(-1, 3))
-    fg_probs = np.max(fg_probs, axis=1).reshape(height, width)
-    bg_probs = np.max(bg_probs, axis=1).reshape(height, width)
+def calculate_likelihood(img, gmm):
+    h, w, c = img.shape
+    pixels = img.reshape(-1, 3)
+    likelihoods = np.zeros((h, w))
+
+    for i in range(gmm.n_components):
+        mean = gmm.means_[i]
+        cov = gmm.covariances_[i]
+        weight = gmm.weights_[i]
+
+        inv_cov = np.linalg.inv(cov)
+        det_cov = np.linalg.det(cov)
+        norm_factor = 1 / np.sqrt((2 * np.pi) ** c * det_cov)
+
+        diff = pixels - mean
+        likelihoods += weight * norm_factor * np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
+
+    return -np.log(likelihoods + 1e-10)
+
+
+def calculate_T_link_weights(img, mask, bgGMM, fgGMM):
+    fg_likelihood = calculate_likelihood(img, fgGMM)
+    bg_likelihood = calculate_likelihood(img, bgGMM)
+
+    fg_probs = np.zeros_like(fg_likelihood)
+    bg_probs = np.zeros_like(bg_likelihood)
+
+    fg_probs[mask == 3] = 0
+    bg_probs[mask == 3] = np.max(fg_likelihood)
+
+    fg_probs[mask == 0] = np.max(bg_likelihood)
+    bg_probs[mask == 0] = 0
+
+    fg_probs[mask == 1] = fg_likelihood[mask == 1]
+    bg_probs[mask == 1] = bg_likelihood[mask == 1]
+
     return fg_probs, bg_probs
 
 
-def calculate_mincut(img:np.ndarray, mask:np.ndarray, bgGMM:GaussianMixture, fgGMM:GaussianMixture):
+# def calculate_T_link_weights(img: np.ndarray,
+#                              bgGMM: GaussianMixture,
+#                              fgGMM: GaussianMixture) -> tuple[dict, dict]:
+#     # ?????????????
+#     height, width, _ = img.shape
+#     fg_probs = fgGMM.predict_proba(img.reshape(-1, 3))
+#     bg_probs = bgGMM.predict_proba(img.reshape(-1, 3))
+#     fg_probs = np.max(fg_probs, axis=1).reshape(height, width)
+#     bg_probs = np.max(bg_probs, axis=1).reshape(height, width)
+#     return fg_probs, bg_probs
 
-    min_cut = [[], []]
-    energy = 0
-    return min_cut, energy
+
+def calculate_mincut(img, mask, bgGMM, fgGMM,beta):
+    h, w, c = img.shape
+    N_link_weights = calculate_N_link_weights(img, beta)
+    fg_probs, bg_probs = calculate_T_link_weights(img, mask, bgGMM, fgGMM)
+
+    graph = ig.Graph()
+    graph.add_vertices(h * w + 2)  # Pixels + Source + Sink
+    source = h * w  # Source node index
+    sink = h * w + 1  # Sink node index
+
+    edges = []
+    capacities = []
+
+    K = np.max(list(N_link_weights.values()))
+
+    for y in range(h):
+        for x in range(w):
+            pixel_index = y * w + x
+            edges.append((source, pixel_index))
+            capacities.append(bg_probs[y, x])  # T-link to source
+
+            edges.append((pixel_index, sink))
+            capacities.append(fg_probs[y, x])  # T-link to sink
+
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w:
+                    neighbor_index = ny * w + nx
+                    edges.append((pixel_index, neighbor_index))
+                    capacities.append(N_link_weights[(y, x, ny, nx)])
+
+    graph.add_edges(edges)
+    graph.es['capacity'] = capacities
+
+    min_cut = graph.st_mincut(source, sink, capacity='capacity')
+    energy = min_cut.value
+
+    fg_segment = [v for v in min_cut.partition[0] if v != source]
+    bg_segment = [v for v in min_cut.partition[1] if v != sink]
+
+    fg_segment = [(v // w, v % w) for v in fg_segment]
+    bg_segment = [(v // w, v % w) for v in bg_segment]
+
+    return (fg_segment, bg_segment), energy
 
 
 def update_mask(mincut_sets, mask):
