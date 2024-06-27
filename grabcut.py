@@ -8,9 +8,13 @@ from sklearn.mixture import GaussianMixture
 EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
 
 GC_BGD = 0  # Hard bg pixel
+HARD_BG = GC_BGD
 GC_FGD = 1  # Hard fg pixel, will not be used
+HARD_FG = GC_FGD
 GC_PR_BGD = 2  # Soft bg pixel
+SOFT_BG = GC_PR_BGD
 GC_PR_FGD = 3  # Soft fg pixel
+SOFT_FG = GC_PR_FGD
 
 
 # Define the GrabCut algorithm function
@@ -50,12 +54,11 @@ def grabcut(img, rect, n_iter=5):
 
 def get_fore_back_pixels(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    helper function
-    :param img: RGB image.
-    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
-    :return: foreground and background pixels masks.
+    helper function: extract foreground and background pixels from image
+    :param img:  (H x W, C) flatten RGB image.
+    :param mask: (H' x W') rectangle representing the (inside) foreground and (outside) background pixels.
+    :return: (H' x W', C) foreground and background pixels masks.
     """
-
     fore_mask = ((mask == 1) | (mask == 3)).reshape(-1)
     back_mask = ((mask == 0) | (mask == 2)).reshape(-1)
 
@@ -68,8 +71,8 @@ def get_fore_back_pixels(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray,
 def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
     """
      Initialized Gaussian Mixture Models required for the GrabCut algorithm.
-    :param img: RGB image.
-    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
+    :param img: (H, W, C) RGB image.
+    :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param n_components: number of Gaussian mixtures to create.
     :return: initialized foreground and background Gaussian Mixture Models.
     """
@@ -93,12 +96,12 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
 
 def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int = 5) -> GaussianMixture:
     """
-    helper function
-    calculations of weights, means, and covariances for the Gaussian Mixture Models, then update them.
-    :param img: RGB image.
+    helper function: calculations of weights, means, and covariances for the Gaussian Mixture Models,
+     then update them respectively.
+    :param img: (H, W , C) RGB image.
     :param gmm: Gaussian Mixture Model.
     :param n_components: number of Gaussian mixtures to create.
-    :return: updated Gaussian Mixture Model (mean, wghts, covariances).
+    :return: updated Gaussian Mixture Model (mean, weights, covariances).
     """
     predictions = gmm.predict_proba(img)
 
@@ -127,12 +130,12 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     return gmm
 
 
-def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture)\
+def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture) \
         -> tuple[GaussianMixture, GaussianMixture]:
     """
     updates foreground and background Gaussian Mixture Models by new mask.
-    :param img: RGB image.
-    :param mask: rectangle representing the (inside) foreground and (outside) background pixels.
+    :param img: (H, W, C) RGB image.
+    :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param bgGMM: background Gaussian Mixture Model.
     :param fgGMM: foreground Gaussian Mixture Model.
     :return: updated foreground and background Gaussian Mixture Models.
@@ -149,9 +152,9 @@ def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM
 
 def calculate_beta(img: np.ndarray) -> float:
     """
-
-    :param img:
-    :return:
+    Calculate the β normalization term for N-link weights.
+    :param img: (H, W, C) RGB image.
+    :return: β. ensures that the exponential term switches appropriately between high and low contrast.
     """
     height, weight, _ = img.shape
     beta = 0
@@ -169,11 +172,13 @@ def calculate_beta(img: np.ndarray) -> float:
 
 def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
     """
-
-    :param img:
-    :param beta:
-    :return:
+    Calculate the weights between neighboring pixels, computed using the intensity differences and the β value.
+     Follows each pixel's eight neighbors and assigns a wighted edge between them.
+    :param img: RGB image (H x W x C)
+    :param beta: β is used to determine the weight of N-links
+    :return: N-links: weighted edges between neighboring pixels.
     """
+
     height, width, _ = img.shape
     N_link_weights = {}
 
@@ -182,18 +187,21 @@ def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
             for dx, dy in EIGHT_DIR:
                 neighbor_x, neighbor_y = x + dx, y + dy
                 if 0 <= neighbor_x < width and 0 <= neighbor_y < height:
-                    try:
-                        weight = np.exp(-beta * np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2))
-                        weight *= 50 / np.sqrt(abs(dy) + abs(dx))
-                    except:
-                        print()
-
+                    weight = np.exp(-beta * np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2))
+                    weight *= 50 / np.sqrt(abs(dy) + abs(dx))
                     N_link_weights[(y, x, neighbor_y, neighbor_x)] = weight
 
     return N_link_weights
 
 
-def calculate_likelihood(img, gmm):
+def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
+    """
+     Accumulates the sum of the weighted Gaussian probabilities for each pixel,
+      and then we take the negative logarithm of this sum to get D(m).
+    :param img: (H, W, C)
+    :param gmm: Gaussian Mixture Model.
+    :return:
+    """
     h, w, c = img.shape
     pixels = img.reshape(-1, 3)
     likelihoods = np.zeros((h, w))
@@ -202,49 +210,64 @@ def calculate_likelihood(img, gmm):
         mean = gmm.means_[i]
         cov = gmm.covariances_[i]
         weight = gmm.weights_[i]
-
         inv_cov = np.linalg.inv(cov)
         det_cov = np.linalg.det(cov)
-        norm_factor = 1 / np.sqrt((2 * np.pi) ** c * det_cov)
 
+        norm_factor = weight / np.sqrt(det_cov)
+
+        # D(m) for all pixels at once.
+        # equivalent to the per_pixel calculation as shown in the article
         diff = pixels - mean
-        likelihoods += weight * norm_factor * np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
+        exp = np.exp(0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
 
-    return -np.log(likelihoods + 1e-10)
+        likelihoods += weight * norm_factor * exp
+
+    # The addition of 1e-10 ensures numerical stability by preventing a log of zero.
+    likelihoods += 1e-10
+    likelihoods = -np.log(likelihoods)
+
+    return likelihoods
 
 
-def calculate_T_link_weights(img, mask, bgGMM, fgGMM):
+def calculate_T_link_weights(img: np.ndarray,
+                             mask: np.ndarray,
+                             bgGMM: GaussianMixture,
+                             fgGMM: GaussianMixture) -> tuple[np.ndarray, np.ndarray]:
+    """
+     The weights of these links depend on the state of the trimap.
+     If the user has indicated that a particular pixel is definitely foreground or definitely background,
+     we reflect this fact by weighting the links such that the pixel is forced into the appropriate group.
+     For unknown pixels we use the probabilities obtained from the GMMs to set the weights.
+    :param img: (H, W, C) RGB image.
+    :param mask: (H' x W') rectangle representing the (inside) foreground and (outside) background pixels.
+    :param bgGMM: background Gaussian Mixture Model.
+    :param fgGMM: foreground Gaussian Mixture Model.
+    :return: Two T-links for each pixel. The Background T-link connects the pixel to the Background node.
+     The Foreground T-link connects the pixel to the Foreground node. The edges' weight is the probability of GMM.
+    """
+
     fg_likelihood = calculate_likelihood(img, fgGMM)
     bg_likelihood = calculate_likelihood(img, bgGMM)
+
+    K = max(np.max(fg_likelihood), np.max(bg_likelihood)) + 1
 
     fg_probs = np.zeros_like(fg_likelihood)
     bg_probs = np.zeros_like(bg_likelihood)
 
-    fg_probs[mask == 3] = 0
-    bg_probs[mask == 3] = np.max(fg_likelihood)
+    fg_probs[mask == HARD_BG] = 0  # SOFT_FG -> HARD_BG
+    bg_probs[mask == HARD_BG] = K  # np.max(fg_likelihood) -> K; SOFT_FG -> HARD_BG
 
-    fg_probs[mask == 0] = np.max(bg_likelihood)
-    bg_probs[mask == 0] = 0
+    fg_probs[mask == HARD_FG] = K  # np.max(bg_likelihood) -> K; HARD_BG -> HARD_FG
+    bg_probs[mask == HARD_FG] = 0  # HARD_BG -> HARD_FG
 
-    fg_probs[mask == 1] = fg_likelihood[mask == 1]
-    bg_probs[mask == 1] = bg_likelihood[mask == 1]
+    pixel_unknown = np.logical_or(mask == SOFT_FG, mask == SOFT_BG)
+    fg_probs[pixel_unknown] = fg_likelihood[pixel_unknown]  # HARD_FG -> SOFT_FG|SOFT_BG
+    bg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # HARD_FG -> SOFT_FG|SOFT_BG
 
     return fg_probs, bg_probs
 
 
-# def calculate_T_link_weights(img: np.ndarray,
-#                              bgGMM: GaussianMixture,
-#                              fgGMM: GaussianMixture) -> tuple[dict, dict]:
-#     # ?????????????
-#     height, width, _ = img.shape
-#     fg_probs = fgGMM.predict_proba(img.reshape(-1, 3))
-#     bg_probs = bgGMM.predict_proba(img.reshape(-1, 3))
-#     fg_probs = np.max(fg_probs, axis=1).reshape(height, width)
-#     bg_probs = np.max(bg_probs, axis=1).reshape(height, width)
-#     return fg_probs, bg_probs
-
-
-def calculate_mincut(img, mask, bgGMM, fgGMM,beta):
+def calculate_mincut(img, mask, bgGMM, fgGMM, beta):
     h, w, c = img.shape
     N_link_weights = calculate_N_link_weights(img, beta)
     fg_probs, bg_probs = calculate_T_link_weights(img, mask, bgGMM, fgGMM)
