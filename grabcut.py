@@ -176,7 +176,7 @@ def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
      Follows each pixel's eight neighbors and assigns a wighted edge between them.
     :param img: RGB image (H x W x C)
     :param beta: β is used to determine the weight of N-links
-    :return: N-links: weighted edges between neighboring pixels.
+    :return: N-links: ([x, y], [x', y']) : weight weighted edges between neighboring pixels.
     """
 
     height, width, _ = img.shape
@@ -232,7 +232,8 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
 def calculate_T_link_weights(img: np.ndarray,
                              mask: np.ndarray,
                              bgGMM: GaussianMixture,
-                             fgGMM: GaussianMixture) -> tuple[np.ndarray, np.ndarray]:
+                             fgGMM: GaussianMixture,
+                             K: float) -> tuple[np.ndarray, np.ndarray]:
     """
      The weights of these links depend on the state of the trimap.
      If the user has indicated that a particular pixel is definitely foreground or definitely background,
@@ -242,14 +243,14 @@ def calculate_T_link_weights(img: np.ndarray,
     :param mask: (H' x W') rectangle representing the (inside) foreground and (outside) background pixels.
     :param bgGMM: background Gaussian Mixture Model.
     :param fgGMM: foreground Gaussian Mixture Model.
+    :param K: float representing MAX(N(m,n)) m,n are adjacent pixels in the graph, N is weight function of the N-Links
+
     :return: Two T-links for each pixel. The Background T-link connects the pixel to the Background node.
      The Foreground T-link connects the pixel to the Foreground node. The edges' weight is the probability of GMM.
     """
 
-    fg_likelihood = calculate_likelihood(img, fgGMM)
-    bg_likelihood = calculate_likelihood(img, bgGMM)
-
-    K = max(np.max(fg_likelihood), np.max(bg_likelihood)) + 1
+    fg_likelihood = calculate_likelihood(img=img, gmm=fgGMM)
+    bg_likelihood = calculate_likelihood(img=img, gmm=bgGMM)
 
     fg_probs = np.zeros_like(fg_likelihood)
     bg_probs = np.zeros_like(bg_likelihood)
@@ -267,10 +268,20 @@ def calculate_T_link_weights(img: np.ndarray,
     return fg_probs, bg_probs
 
 
-def calculate_mincut(img, mask, bgGMM, fgGMM, beta):
+def calculate_mincut(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture, beta: float):
+    """
+    Calculate the minimum cut between neighboring pixels.
+    :param img: (H, W, C) RGB image.
+    :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
+    :param bgGMM: background Gaussian Mixture Model.
+    :param fgGMM: foreground Gaussian Mixture Model.
+    :param beta: β normalization term for N-link weights.
+    :return:
+    """
     h, w, c = img.shape
-    N_link_weights = calculate_N_link_weights(img, beta)
-    fg_probs, bg_probs = calculate_T_link_weights(img, mask, bgGMM, fgGMM)
+    N_link_weights = calculate_N_link_weights(img=img, beta=beta)
+    k = np.max(list(N_link_weights.values()))
+    fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
 
     graph = ig.Graph()
     graph.add_vertices(h * w + 2)  # Pixels + Source + Sink
@@ -279,8 +290,6 @@ def calculate_mincut(img, mask, bgGMM, fgGMM, beta):
 
     edges = []
     capacities = []
-
-    K = np.max(list(N_link_weights.values()))
 
     for y in range(h):
         for x in range(w):
@@ -291,7 +300,7 @@ def calculate_mincut(img, mask, bgGMM, fgGMM, beta):
             edges.append((pixel_index, sink))
             capacities.append(fg_probs[y, x])  # T-link to sink
 
-            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            for dy, dx in EIGHT_DIR:
                 ny, nx = y + dy, x + dx
                 if 0 <= ny < h and 0 <= nx < w:
                     neighbor_index = ny * w + nx
@@ -307,6 +316,7 @@ def calculate_mincut(img, mask, bgGMM, fgGMM, beta):
     fg_segment = [v for v in min_cut.partition[0] if v != source]
     bg_segment = [v for v in min_cut.partition[1] if v != sink]
 
+    # convert vertex index to (x,y) coordinates for each segment
     fg_segment = [(v // w, v % w) for v in fg_segment]
     bg_segment = [(v // w, v % w) for v in bg_segment]
 
