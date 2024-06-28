@@ -7,6 +7,8 @@ from sklearn.mixture import GaussianMixture
 
 EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
 
+EPSILON = 1e-4
+
 GC_BGD = 0  # Hard bg pixel
 HARD_BG = GC_BGD
 GC_FGD = 1  # Hard fg pixel, will not be used
@@ -218,9 +220,9 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
         # D(m) for all pixels at once.
         # equivalent to the per_pixel calculation as shown in the article
         diff = pixels - mean
-        exp = np.exp(0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
+        exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
 
-        likelihoods += weight * norm_factor * exp
+        likelihoods += norm_factor * exp
 
     # The addition of 1e-10 ensures numerical stability by preventing a log of zero.
     likelihoods += 1e-10
@@ -268,7 +270,11 @@ def calculate_T_link_weights(img: np.ndarray,
     return fg_probs, bg_probs
 
 
-def calculate_mincut(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture, beta: float):
+def calculate_mincut(img: np.ndarray,
+                     mask: np.ndarray,
+                     bgGMM: GaussianMixture,
+                     fgGMM: GaussianMixture,
+                     beta: float) -> tuple[tuple[list[tuple[int, int]], list[tuple[int,int]]], float]:
     """
     Calculate the minimum cut between neighboring pixels.
     :param img: (H, W, C) RGB image.
@@ -295,10 +301,10 @@ def calculate_mincut(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, 
         for x in range(w):
             pixel_index = y * w + x
             edges.append((source, pixel_index))
-            capacities.append(bg_probs[y, x])  # T-link to source
+            capacities.append(fg_probs[y, x])  # T-link to source
 
             edges.append((pixel_index, sink))
-            capacities.append(fg_probs[y, x])  # T-link to sink
+            capacities.append(bg_probs[y, x])  # T-link to sink
 
             for dy, dx in EIGHT_DIR:
                 ny, nx = y + dy, x + dx
@@ -329,8 +335,7 @@ def update_mask(mincut_sets, mask):
 
 
 def check_convergence(energy):
-    # TODO: implement convergence check
-    convergence = False
+    convergence = energy < EPSILON
     return convergence
 
 
