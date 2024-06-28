@@ -5,22 +5,23 @@ import igraph as ig
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
-EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
-
-EPSILON = 1e-4
 
 GC_BGD = 0  # Hard bg pixel
-HARD_BG = GC_BGD
 GC_FGD = 1  # Hard fg pixel, will not be used
-HARD_FG = GC_FGD
 GC_PR_BGD = 2  # Soft bg pixel
-SOFT_BG = GC_PR_BGD
 GC_PR_FGD = 3  # Soft fg pixel
+HARD_BG = GC_BGD
+HARD_FG = GC_FGD
+SOFT_BG = GC_PR_BGD
 SOFT_FG = GC_PR_FGD
+
+EPSILON = 1e-4
+EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1),
+             (0, -1), (1, -1), (1, 0), (1, 1)]
 
 
 # Define the GrabCut algorithm function
-def grabcut(img, rect, n_iter=5):
+def grabcut(img: np.ndarray, rect: np.ndarray, n_iter: int = 5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -38,8 +39,7 @@ def grabcut(img, rect, n_iter=5):
 
     beta = calculate_beta(img=img)
 
-    num_iters = 1000
-    for i in range(num_iters):
+    for i in range(n_iter):
         # Update GMM
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
@@ -54,57 +54,59 @@ def grabcut(img, rect, n_iter=5):
     return mask, bgGMM, fgGMM
 
 
-def get_fore_back_pixels(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def get_trimaps(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    helper function: extract foreground and background pixels from image
+    helper function: extract foreground and background pixels from image.
     :param img:  (H x W, C) flatten RGB image.
     :param mask: (H' x W') rectangle representing the (inside) foreground and (outside) background pixels.
-    :return: (H' x W', C) foreground and background pixels masks.
+    :return: (H' x W', C) foreground and background tree maps.
     """
-    fore_mask = ((mask == 1) | (mask == 3)).reshape(-1)
-    back_mask = ((mask == 0) | (mask == 2)).reshape(-1)
+    # boolean arrays holding the foreground and background pixels masks.
+    fore_mask = np.isin(mask, test_elements=[3]).reshape(-1)
+    back_mask = np.isin(mask, test_elements=[0, 2]).reshape(-1)
 
-    fore_image = img[fore_mask]
-    back_image = img[back_mask]
+    fore_trimap = img[fore_mask]
+    back_trimap = img[back_mask]
 
-    return fore_image, back_image
+    return fore_trimap, back_trimap
 
 
 def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
     """
-     Initialized Gaussian Mixture Models required for the GrabCut algorithm.
+    Initialized Gaussian Mixture Models required for the GrabCut algorithm.
     :param img: (H, W, C) RGB image.
     :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param n_components: number of Gaussian mixtures to create.
     :return: initialized foreground and background Gaussian Mixture Models.
     """
-    image = img.reshape(-1, 3)
+    fore_treemap, back_treemap = get_trimaps(img=img.reshape(-1, 3), mask=mask)
 
-    fore_image, back_image = get_fore_back_pixels(img=image, mask=mask)
+    # finds n means of foreground and background RGB tree maps.
+    fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_treemap)
+    back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_treemap)
 
-    fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_image)
-    back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_image)
-
+    # init n GMM components with n clusters for foreground and background
     fgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     fgGMM.means_ = fore_kmeans.cluster_centers_
-    fgGMM.fit(fore_image)
+    fgGMM.fit(fore_treemap)
 
     bgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     bgGMM.means_ = back_kmeans.cluster_centers_
-    bgGMM.fit(back_image)
+    bgGMM.fit(back_treemap)
 
     return bgGMM, fgGMM
 
 
 def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int = 5) -> GaussianMixture:
     """
-    helper function: calculations of weights, means, and covariances for the Gaussian Mixture Models,
+    helper function: computes weights, means, and covariances for the Gaussian Mixture Models,
      then update them respectively.
     :param img: (H, W , C) RGB image.
     :param gmm: Gaussian Mixture Model.
     :param n_components: number of Gaussian mixtures to create.
     :return: updated Gaussian Mixture Model (mean, weights, covariances).
     """
+    # evaluate the components' density for each sample.
     predictions = gmm.predict_proba(img)
 
     weights = np.sum(predictions, axis=0)
@@ -135,19 +137,17 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
 def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture) \
         -> tuple[GaussianMixture, GaussianMixture]:
     """
-    updates foreground and background Gaussian Mixture Models by new mask.
+    updates foreground and background Gaussian Mixture Models from a new mask.
     :param img: (H, W, C) RGB image.
     :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param bgGMM: background Gaussian Mixture Model.
     :param fgGMM: foreground Gaussian Mixture Model.
     :return: updated foreground and background Gaussian Mixture Models.
     """
-    image = img.reshape(-1, 3)
+    fore_trimap, back_trimap = get_trimaps(img=img.reshape(-1, 3), mask=mask)
 
-    fore_image, back_image = get_fore_back_pixels(img=image, mask=mask)
-
-    bgGMM = update_parameters(img=back_image, gmm=bgGMM)
-    fgGMM = update_parameters(img=fore_image, gmm=fgGMM)
+    bgGMM = update_parameters(img=back_trimap, gmm=bgGMM)
+    fgGMM = update_parameters(img=fore_trimap, gmm=fgGMM)
 
     return bgGMM, fgGMM
 
