@@ -5,7 +5,6 @@ import igraph as ig
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 
-
 GC_BGD = 0  # Hard bg pixel
 GC_FGD = 1  # Hard fg pixel, will not be used
 GC_PR_BGD = 2  # Soft bg pixel
@@ -15,16 +14,19 @@ HARD_FG = GC_FGD
 SOFT_BG = GC_PR_BGD
 SOFT_FG = GC_PR_FGD
 
+# convergence parameters
 EPSILON = 1e-4
-EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1),
-             (0, -1), (1, -1), (1, 0), (1, 1)]
+MIN_ENERGY = float('inf')
+
+# define the eight directions for neighbors
+EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 1):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 3):
     # Assign initial labels to the pixels based on the bounding box
-    mask = np.zeros(img.shape[:2], dtype=np.uint8)
-    mask.fill(GC_BGD)
+    # Initialize all cells as Background
+    mask = np.zeros(img.shape[:2], dtype=np.uint8) * HARD_BG
     x, y, w, h = rect
 
     # Convert from absolute coordinates
@@ -32,8 +34,9 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 1):
     h -= y
 
     # Initialize the inner square to Foreground
-    mask[y:y + h, x:x + w] = GC_PR_FGD
-    mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = GC_FGD
+    mask[y:y + h, x:x + w] = SOFT_FG
+    # Initialize center pixel to Foreground - Strong. deleted since not documented
+    # mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = HARD_FG
 
     bgGMM, fgGMM = initalize_GMMs(img, mask)
 
@@ -61,6 +64,7 @@ def get_trimaps(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarr
     :param mask: (H' x W') rectangle representing the (inside) foreground and (outside) background pixels.
     :return: (H' x W', C) foreground and background tree maps.
     """
+    mask = mask.reshape(-1)
     # boolean arrays holding the foreground and background pixels masks.
     fore_mask = np.isin(mask, test_elements=[SOFT_FG]).reshape(-1)
     back_mask = np.isin(mask, test_elements=[HARD_BG, SOFT_BG]).reshape(-1)
@@ -109,7 +113,7 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     # evaluate the components' density for each sample.
     predictions = gmm.predict_proba(img)
 
-    weights = np.sum(predictions, axis=0)
+    weights = np.sum(predictions, axis=0) + EPSILON
 
     # means
     means = np.dot(predictions.T, img.reshape(-1, img.shape[-1])) / weights[:, np.newaxis]
@@ -151,7 +155,7 @@ def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM
     return bgGMM, fgGMM
 
 
-def square_difference(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
+def squared_color_difference(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
     """
     helper function: computes squared difference between original image and shifted (by dx, dy) image.
     ignores the border. Implemented with Vectorization.
@@ -164,19 +168,6 @@ def square_difference(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
     shifted_img = np.roll(img, shift=(dy, dx), axis=(0, 1))
     # compute the squared differences
     squared_diff = np.sum((img - shifted_img) ** 2, axis=2)
-
-    # ignore the edges (set the border to zero)
-    if dy != 0:
-        if dy > 0:
-            squared_diff[:dy, :] = 0
-        else:
-            squared_diff[dy:, :] = 0
-    if dx != 0:
-        if dx > 0:
-            squared_diff[:, :dx] = 0
-        else:
-            squared_diff[:, dx:] = 0
-
     return squared_diff
 
 
@@ -191,7 +182,7 @@ def calculate_beta(img: np.ndarray) -> float:
 
     # iterate through each direction
     for dy, dx in EIGHT_DIR:
-        squared_diff = square_difference(img=img, dx=dx, dy=dy)
+        squared_diff = squared_color_difference(img=img, dx=dx, dy=dy)
         sum_squared_diff += np.sum(squared_diff)
 
     # normalize beta
@@ -210,57 +201,56 @@ def calculate_N_link_weights(img: np.ndarray, beta: float) -> np.ndarray:
     """
     height, width, _ = img.shape
 
-    # define the eight directions
-    sqrt_weights = np.array([1 / np.sqrt(abs(dy) + abs(dx)) for dy, dx in EIGHT_DIR])
+    # define the eight directions inverse_distances
+    distances = np.linalg.norm(EIGHT_DIR, axis=1)
+    inverse_distances = 1 / distances
 
-    # initialize an array to store the weights
-    N_link_weights = np.zeros((height, width, len(EIGHT_DIR)))
+    # Calculate squared differences for all directions
+    squared_diffs = np.array([squared_color_difference(img, dx, dy) for dy, dx in EIGHT_DIR])
 
-    # Iterate through each direction
-    for i, (dy, dx) in enumerate(EIGHT_DIR):
-        squared_diff = square_difference(img=img, dx=dx, dy=dy)
+    # Calculate weights using vectorized operations
+    weights = np.exp(-beta * squared_diffs) * 50 * inverse_distances[:, np.newaxis, np.newaxis]
 
-        # Calculate weights using vectorized operations
-        weights = np.exp(-beta * squared_diff) * 50 * sqrt_weights[i]
-
-        # Store weights in the array
-        N_link_weights[:, :, i] = weights
-
+    # Initialize and store weights in N_link_weights array
+    N_link_weights = np.transpose(weights, (1, 2, 0))
     return N_link_weights
 
 
 def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     """
-     Accumulates the sum of the weighted Gaussian probabilities for each pixel,
-      and then we take the negative logarithm of this sum to get D(m).
+    Accumulates the sum of the weighted Gaussian probabilities for each pixel,
+    and then we take the negative logarithm of this sum to get D(m).
     :param img: (H, W, C)
     :param gmm: Gaussian Mixture Model.
-    :return:
+    :return: (H, W) - Likelihood for each pixel
     """
     h, w, c = img.shape
     pixels = img.reshape(-1, 3)
-    likelihoods = np.zeros((h, w))
 
-    for i in range(gmm.n_components):
-        mean = gmm.means_[i]
-        cov = gmm.covariances_[i]
-        weight = gmm.weights_[i]
-        inv_cov = np.linalg.inv(cov)
-        det_cov = np.linalg.det(cov)
-
-        norm_factor = weight / np.sqrt(det_cov)
-
-        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
-        diff = pixels - mean
-        exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
-
-        likelihoods += norm_factor * exp
-
-    # ensures numerical stability by preventing a log of zero.
-    likelihoods += 1e-10
-    likelihoods = -np.log(likelihoods)
-
-    return likelihoods
+    # TODO: DELETE OLD
+    # likelihoods = np.zeros((h, w))
+    #
+    # for i in range(gmm.n_components):
+    #     mean = gmm.means_[i]
+    #     cov = gmm.covariances_[i]
+    #     weight = gmm.weights_[i]
+    #     inv_cov = np.linalg.inv(cov)
+    #     det_cov = np.linalg.det(cov)
+    #
+    #     norm_factor = weight / np.sqrt(det_cov)
+    #
+    #     # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
+    #     diff = pixels - mean
+    #     exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
+    #
+    #     likelihoods += norm_factor * exp
+    #
+    # # ensures numerical stability by preventing a log of zero.
+    # likelihoods += 1e-10
+    # likelihoods = -np.log(likelihoods)
+    #
+    # return likelihoods
+    return -gmm.score_samples(pixels).reshape(h, w)
 
 
 def calculate_T_link_weights(img: np.ndarray,
@@ -289,15 +279,15 @@ def calculate_T_link_weights(img: np.ndarray,
     fg_probs = np.zeros_like(fg_likelihood)
     bg_probs = np.zeros_like(bg_likelihood)
 
-    fg_probs[mask == HARD_BG] = 0  # HARD_BG -> set 0
+    fg_probs[mask == HARD_BG] = 0  # HARD_BG -> set 0; redundant - TODO:delete?
     bg_probs[mask == HARD_BG] = K  # HARD_BG -> set K
 
     fg_probs[mask == HARD_FG] = K  # HARD_FG -> set K
-    bg_probs[mask == HARD_FG] = 0  # HARD_FG -> set 0
+    bg_probs[mask == HARD_FG] = 0  # HARD_FG -> set 0; redundant - TODO:delete?
 
     pixel_unknown = np.logical_or(mask == SOFT_FG, mask == SOFT_BG)
-    fg_probs[pixel_unknown] = fg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
-    bg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
+    fg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
+    bg_probs[pixel_unknown] = fg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
 
     return fg_probs, bg_probs
 
@@ -321,28 +311,69 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
     edges = []
     capacities = []
 
-    for y in range(h):
-        for x in range(w):
-            pixel_index = y * w + x
-            # add edge from source to current pixel with capacity fg_probs
-            edges.append((source, pixel_index))
-            capacities.append(fg_probs[y, x])  # T-link to source
+    # Flatten the foreground and background probabilities
+    fg_flat = fg_probs.flatten()
+    bg_flat = bg_probs.flatten()
 
-            # add edge from source to current pixel with capacity fg_probs
-            edges.append((pixel_index, sink))
-            capacities.append(bg_probs[y, x])  # T-link to sink
+    # Create pixel indices
+    pixel_indices = np.arange(h * w).reshape(h, w)
 
-            # add edges for all valid neighbors
-            for i, (dy, dx) in enumerate(EIGHT_DIR):
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < h and 0 <= nx < w:
-                    neighbor_index = ny * w + nx
-                    edges.append((pixel_index, neighbor_index))
-                    capacities.append(N_link_weights[y, x, i])  # N-link weight
+    # Add edges from source to pixels and pixels to sink
+    source_edges = np.column_stack((np.full(h * w, source), pixel_indices.flatten()))
+    sink_edges = np.column_stack((pixel_indices.flatten(), np.full(h * w, sink)))
 
-    # add the edges and their capacities to the graph
-    graph.add_edges(edges)
-    graph.es['capacity'] = capacities
+    edges.extend(source_edges)
+    edges.extend(sink_edges)
+    capacities.extend(fg_flat)
+    capacities.extend(bg_flat)
+
+    # Calculate neighbor indices
+    for i, (dy, dx) in enumerate(EIGHT_DIR):
+        ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
+        valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+
+        pixel_indices_flat = pixel_indices[valid_mask]
+        neighbor_indices_flat = pixel_indices[ny[valid_mask], nx[valid_mask]]
+
+        neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
+        edges.extend(neighbor_edges)
+
+        neighbor_capacities = N_link_weights[:, :, i][valid_mask]
+        capacities.extend(neighbor_capacities)
+
+    # Convert edges and capacities to the format required by the graph library
+    edges = np.array(edges)
+    capacities = np.array(capacities)
+
+    # Add the edges and their capacities to the graph
+    graph.add_edges(edges.tolist())
+    graph.es['capacity'] = capacities.tolist()
+    # TODO: DELETE OLD
+    # edges = []
+    # capacities = []
+    #
+    # for y in range(h):
+    #     for x in range(w):
+    #         pixel_index = y * w + x
+    #         # add edge from source to current pixel with capacity fg_probs
+    #         edges.append((source, pixel_index))
+    #         capacities.append(fg_probs[y, x])  # T-link to source
+    #
+    #         # add edge from source to current pixel with capacity fg_probs
+    #         edges.append((pixel_index, sink))
+    #         capacities.append(bg_probs[y, x])  # T-link to sink
+    #
+    #         # add edges for all valid neighbors
+    #         for i, (dy, dx) in enumerate(EIGHT_DIR):
+    #             ny, nx = y + dy, x + dx
+    #             if 0 <= ny < h and 0 <= nx < w:
+    #                 neighbor_index = ny * w + nx
+    #                 edges.append((pixel_index, neighbor_index))
+    #                 capacities.append(N_link_weights[y, x, i])  # N-link weight
+    #
+    # # add the edges and their capacities to the graph
+    # graph.add_edges(edges)
+    # graph.es['capacity'] = capacities
 
     return graph
 
@@ -371,12 +402,9 @@ def calculate_mincut(img: np.ndarray,
     min_cut = graph.st_mincut(h * w, h * w + 1, capacity='capacity')
     energy = min_cut.value
 
-    fg_segment = [v for v in min_cut.partition[0] if v != h * w]
-    bg_segment = [v for v in min_cut.partition[1] if v != h * w + 1]
-
-    # Convert vertex index to (x,y) coordinates for each segment
-    fg_segment = [(v // w, v % w) for v in fg_segment]
-    bg_segment = [(v // w, v % w) for v in bg_segment]
+    # get segments without source and sink, convert vertex index to (x,y) coordinates
+    fg_segment = [(v // w, v % w) for v in min_cut.partition[0] if v != h * w]
+    bg_segment = [(v // w, v % w) for v in min_cut.partition[1] if v != h * w + 1]
 
     return (fg_segment, bg_segment), energy
 
@@ -392,7 +420,7 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
 
     # set foreground (inside) based on mincut result
     for y, x in fg_segment:
-        mask[y, x] = HARD_FG
+        mask[y, x] = SOFT_FG
 
     # set background (outside) based on mincut result
     for y, x in bg_segment:
@@ -401,7 +429,9 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
 
 
 def check_convergence(energy):
-    convergence = energy < EPSILON
+    global MIN_ENERGY
+    convergence = MIN_ENERGY - energy < EPSILON
+    MIN_ENERGY = min(MIN_ENERGY, energy)
     return convergence
 
 
@@ -423,14 +453,15 @@ def cal_metric(predicted_mask: np.ndarray, gt_mask: np.ndarray) -> tuple[float, 
 
     # Intersection for Dice Coefficient
     intersection_sum = np.sum(intersection)
-    dice = (2 * intersection_sum) / (np.sum(predicted_mask) + np.sum(gt_mask)) if (np.sum(predicted_mask) + np.sum(gt_mask)) != 0 else 0
+    dice = (2 * intersection_sum) / (np.sum(predicted_mask) + np.sum(gt_mask)) if (np.sum(predicted_mask) + np.sum(
+        gt_mask)) != 0 else 0
 
     return iou * 100, dice * 100
 
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_name', type=str, default='grave', help='name of image from the course files')
+    parser.add_argument('--input_name', type=str, default='flower', help='name of image from the course files')
     parser.add_argument('--eval', type=int, default=1, help='calculate the metrics')
     parser.add_argument('--input_img_path', type=str, default='', help='if you wish to use your own img_path')
     parser.add_argument('--use_file_rect', type=int, default=1, help='Read rect from course files')
@@ -455,13 +486,6 @@ if __name__ == '__main__':
 
     img = cv2.imread(input_path)
 
-    #test case - todo: delete later
-    img = np.ones((500,500,3))
-    img*=255
-    img[200:300, 250:350] = (255,0,0)
-
-    rect = (20, 20, 400,400)
-
     # Run the GrabCut algorithm on the image and bounding box
     mask, bgGMM, fgGMM = grabcut(img, rect)
     mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
@@ -470,8 +494,8 @@ if __name__ == '__main__':
     if args.eval:
         gt_mask = cv2.imread(f'data/seg_GT/{args.input_name}.bmp', cv2.IMREAD_GRAYSCALE)
         gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
-        # acc, jac = cal_metric(mask, gt_mask)
-        # print(f'Accuracy={acc}, Jaccard={jac}')
+        acc, jac = cal_metric(mask, gt_mask)
+        print(f'Accuracy={acc}, Jaccard={jac}')
 
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
