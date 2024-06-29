@@ -152,36 +152,47 @@ def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM
     return bgGMM, fgGMM
 
 
+def square_difference(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """
+    helper function: computes squared difference between original image and shifted (by dx, dy) image.
+    ignores the border. Implemented with Vectorization.
+    :param img: (H, W, C) RGB image.
+    :param dx: shift along x-axis.
+    :param dy: shift along y-axis.
+    :return: difference between original image and shifted (by dx, dy) image.
+    """
+    # compute the shifted images
+    shifted_img = np.roll(img, shift=(dy, dx), axis=(0, 1))
+    # compute the squared differences
+    squared_diff = np.sum((img - shifted_img) ** 2, axis=2)
+
+    # ignore the edges (set the border to zero)
+    if dy != 0:
+        if dy > 0:
+            squared_diff[:dy, :] = 0
+        else:
+            squared_diff[dy:, :] = 0
+    if dx != 0:
+        if dx > 0:
+            squared_diff[:, :dx] = 0
+        else:
+            squared_diff[:, dx:] = 0
+
+    return squared_diff
+
+
 def calculate_beta(img: np.ndarray) -> float:
     """
     Calculate the β normalization term for N-link weights.
     :param img: (H, W, C) RGB image.
     :return: β. ensures that the exponential term switches appropriately between high and low contrast.
     """
-    sum_squared_diff = 0
     height, width, _ = img.shape
+    sum_squared_diff = 0
 
     # iterate through each direction
     for dy, dx in EIGHT_DIR:
-        # compute the shifted images for current dir
-        shifted_img = np.roll(img, shift=(dy, dx), axis=(0, 1))
-
-        # compute the squared differences for all pixels with their neighbors at once, sum over color dimension
-        squared_diff = np.sum((img - shifted_img) ** 2, axis=2)
-
-        # ignore the edges: pad the unnecessary borders to zero
-        if dy != 0:
-            if dy > 0:
-                squared_diff[:dy, :] = 0
-            else:
-                squared_diff[dy:, :] = 0
-        if dx != 0:
-            if dx > 0:
-                squared_diff[:, :dx] = 0
-            else:
-                squared_diff[:, dx:] = 0
-
-        # accumulate the sum of squared differences
+        squared_diff = square_difference(img=img, dx=dx, dy=dy)
         sum_squared_diff += np.sum(squared_diff)
 
     # normalize beta
@@ -190,26 +201,31 @@ def calculate_beta(img: np.ndarray) -> float:
     return 1 / (2 * beta)
 
 
-def calculate_N_link_weights(img: np.ndarray, beta: float) -> dict:
+def calculate_N_link_weights(img: np.ndarray, beta: float) -> np.ndarray:
     """
     Calculate the weights between neighboring pixels, computed using the intensity differences and the β value.
-     Follows each pixel's eight neighbors and assigns a wighted edge between them.
+    Follows each pixel's eight neighbors and assigns a weighted edge between them.
     :param img: RGB image (H x W x C)
     :param beta: β is used to determine the weight of N-links
-    :return: N-links: ([x, y], [x', y']) : weight weighted edges between neighboring pixels.
+    :return: A NumPy array containing the weights of N-links. Shape is (height, width, 8).
     """
-
     height, width, _ = img.shape
-    N_link_weights = {}
 
-    for y in range(height):
-        for x in range(width):
-            for dx, dy in EIGHT_DIR:
-                neighbor_x, neighbor_y = x + dx, y + dy
-                if 0 <= neighbor_x < width and 0 <= neighbor_y < height:
-                    weight = np.exp(-beta * np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2))
-                    weight *= 50 / np.sqrt(abs(dy) + abs(dx))
-                    N_link_weights[(y, x, neighbor_y, neighbor_x)] = weight
+    # define the eight directions
+    sqrt_weights = np.array([1 / np.sqrt(abs(dy) + abs(dx)) for dy, dx in EIGHT_DIR])
+
+    # initialize an array to store the weights
+    N_link_weights = np.zeros((height, width, len(EIGHT_DIR)))
+
+    # Iterate through each direction
+    for i, (dy, dx) in enumerate(EIGHT_DIR):
+        squared_diff = square_difference(img=img, dx=dx, dy=dy)
+
+        # Calculate weights using vectorized operations
+        weights = np.exp(-beta * squared_diff) * 50 * sqrt_weights[i]
+
+        # Store weights in the array
+        N_link_weights[:, :, i] = weights
 
     return N_link_weights
 
@@ -235,14 +251,13 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
 
         norm_factor = weight / np.sqrt(det_cov)
 
-        # D(m) for all pixels at once.
-        # equivalent to the per_pixel calculation as shown in the article
+        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
         diff = pixels - mean
         exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
 
         likelihoods += norm_factor * exp
 
-    # The addition of 1e-10 ensures numerical stability by preventing a log of zero.
+    # ensures numerical stability by preventing a log of zero.
     likelihoods += 1e-10
     likelihoods = -np.log(likelihoods)
 
@@ -303,8 +318,9 @@ def calculate_mincut(img: np.ndarray,
     :return:
     """
     h, w, c = img.shape
+
     N_link_weights = calculate_N_link_weights(img=img, beta=beta)
-    k = np.max(list(N_link_weights.values()))
+    k = np.max(N_link_weights)
     fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
 
     graph = ig.Graph()
@@ -324,12 +340,12 @@ def calculate_mincut(img: np.ndarray,
             edges.append((pixel_index, sink))
             capacities.append(bg_probs[y, x])  # T-link to sink
 
-            for dy, dx in EIGHT_DIR:
+            for i, (dy, dx) in enumerate(EIGHT_DIR):
                 ny, nx = y + dy, x + dx
                 if 0 <= ny < h and 0 <= nx < w:
                     neighbor_index = ny * w + nx
                     edges.append((pixel_index, neighbor_index))
-                    capacities.append(N_link_weights[(y, x, ny, nx)])
+                    capacities.append(N_link_weights[y, x, i])
 
     graph.add_edges(edges)
     graph.es['capacity'] = capacities
