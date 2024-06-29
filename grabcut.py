@@ -21,7 +21,7 @@ EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1),
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: np.ndarray, n_iter: int = 5):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 5):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -158,17 +158,35 @@ def calculate_beta(img: np.ndarray) -> float:
     :param img: (H, W, C) RGB image.
     :return: β. ensures that the exponential term switches appropriately between high and low contrast.
     """
-    height, weight, _ = img.shape
-    beta = 0
-    for y in range(height):
-        for x in range(weight):
-            for dy, dx in EIGHT_DIR:
-                neighbor_y, neighbor_x = y + dy, x + dx
-                # ignores out of range neighbors
-                if 0 <= neighbor_y < height and 0 <= neighbor_x < weight:
-                    beta += np.sum((img[y, x] - img[neighbor_y, neighbor_x]) ** 2)
+    sum_squared_diff = 0
+    height, width, _ = img.shape
 
-    beta /= 2 * height * weight * 8
+    # iterate through each direction
+    for dy, dx in EIGHT_DIR:
+        # compute the shifted images for current dir
+        shifted_img = np.roll(img, shift=(dy, dx), axis=(0, 1))
+
+        # compute the squared differences for all pixels with their neighbors at once, sum over color dimension
+        squared_diff = np.sum((img - shifted_img) ** 2, axis=2)
+
+        # ignore the edges: pad the unnecessary borders to zero
+        if dy != 0:
+            if dy > 0:
+                squared_diff[:dy, :] = 0
+            else:
+                squared_diff[dy:, :] = 0
+        if dx != 0:
+            if dx > 0:
+                squared_diff[:, :dx] = 0
+            else:
+                squared_diff[:, dx:] = 0
+
+        # accumulate the sum of squared differences
+        sum_squared_diff += np.sum(squared_diff)
+
+    # normalize beta
+    beta = sum_squared_diff / (2 * height * width * 8)
+
     return 1 / (2 * beta)
 
 
