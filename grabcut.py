@@ -21,7 +21,7 @@ EIGHT_DIR = [(0, 1), (-1, 1), (-1, 0), (-1, -1),
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 5):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 1):
     # Assign initial labels to the pixels based on the bounding box
     mask = np.zeros(img.shape[:2], dtype=np.uint8)
     mask.fill(GC_BGD)
@@ -40,7 +40,7 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 5):
     beta = calculate_beta(img=img)
 
     for i in range(n_iter):
-        # Update GMM
+        print(f'iter {i + 1} of {n_iter}')
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, beta)
@@ -62,8 +62,8 @@ def get_trimaps(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarr
     :return: (H' x W', C) foreground and background tree maps.
     """
     # boolean arrays holding the foreground and background pixels masks.
-    fore_mask = np.isin(mask, test_elements=[3]).reshape(-1)
-    back_mask = np.isin(mask, test_elements=[0, 2]).reshape(-1)
+    fore_mask = np.isin(mask, test_elements=[SOFT_FG]).reshape(-1)
+    back_mask = np.isin(mask, test_elements=[HARD_BG, SOFT_BG]).reshape(-1)
 
     fore_trimap = img[fore_mask]
     back_trimap = img[back_mask]
@@ -79,20 +79,20 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
     :param n_components: number of Gaussian mixtures to create.
     :return: initialized foreground and background Gaussian Mixture Models.
     """
-    fore_treemap, back_treemap = get_trimaps(img=img.reshape(-1, 3), mask=mask)
+    fore_trimap, back_trimap = get_trimaps(img=img.reshape(-1, 3), mask=mask)
 
     # finds n means of foreground and background RGB tree maps.
-    fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_treemap)
-    back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_treemap)
+    fore_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(fore_trimap)
+    back_kmeans = KMeans(n_clusters=n_components, random_state=0).fit(back_trimap)
 
     # init n GMM components with n clusters for foreground and background
     fgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     fgGMM.means_ = fore_kmeans.cluster_centers_
-    fgGMM.fit(fore_treemap)
+    fgGMM.fit(fore_trimap)
 
     bgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     bgGMM.means_ = back_kmeans.cluster_centers_
-    bgGMM.fit(back_treemap)
+    bgGMM.fit(back_trimap)
 
     return bgGMM, fgGMM
 
@@ -112,15 +112,14 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     weights = np.sum(predictions, axis=0)
 
     # means
-    Nk = weights[:, np.newaxis]
-    expectancy = np.dot(predictions.T, img)
-    means = expectancy / Nk
+    means = np.dot(predictions.T, img.reshape(-1, img.shape[-1])) / weights[:, np.newaxis]
 
     # covariance
     covariances = []
     for k in range(n_components):
-        diff = img - means[k]
-        cov = np.dot((predictions[:, k] * diff.T), diff) / weights[k]
+        diff = img.reshape(-1, img.shape[-1]) - means[k]
+        cov = np.dot((predictions[:, k][:, np.newaxis] * diff).T, diff) / weights[k]
+        cov += np.eye(cov.shape[0]) * EPSILON  # ensure that cov does not contain 0 on main diagonal -> inv is positive
         covariances.append(cov)
 
     weights /= weights.sum()
@@ -290,15 +289,15 @@ def calculate_T_link_weights(img: np.ndarray,
     fg_probs = np.zeros_like(fg_likelihood)
     bg_probs = np.zeros_like(bg_likelihood)
 
-    fg_probs[mask == HARD_BG] = 0  # SOFT_FG -> HARD_BG
-    bg_probs[mask == HARD_BG] = K  # np.max(fg_likelihood) -> K; SOFT_FG -> HARD_BG
+    fg_probs[mask == HARD_BG] = 0  # HARD_BG -> set 0
+    bg_probs[mask == HARD_BG] = K  # HARD_BG -> set K
 
-    fg_probs[mask == HARD_FG] = K  # np.max(bg_likelihood) -> K; HARD_BG -> HARD_FG
-    bg_probs[mask == HARD_FG] = 0  # HARD_BG -> HARD_FG
+    fg_probs[mask == HARD_FG] = K  # HARD_FG -> set K
+    bg_probs[mask == HARD_FG] = 0  # HARD_FG -> set 0
 
     pixel_unknown = np.logical_or(mask == SOFT_FG, mask == SOFT_BG)
-    fg_probs[pixel_unknown] = fg_likelihood[pixel_unknown]  # HARD_FG -> SOFT_FG|SOFT_BG
-    bg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # HARD_FG -> SOFT_FG|SOFT_BG
+    fg_probs[pixel_unknown] = fg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
+    bg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
 
     return fg_probs, bg_probs
 
@@ -382,8 +381,22 @@ def calculate_mincut(img: np.ndarray,
     return (fg_segment, bg_segment), energy
 
 
-def update_mask(mincut_sets, mask):
-    # TODO: implement mask update step
+def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]], mask: np.ndarray) -> np.ndarray:
+    """
+    Update the mask based on the mincut segmentation results.
+    :param mincut_sets: tuple containing foreground and background segments.
+    :param mask: Current mask indicating foreground, background, and unknown regions.
+    :return: Updated mask with foreground and background regions marked.
+    """
+    fg_segment, bg_segment = mincut_sets
+
+    # set foreground (inside) based on mincut result
+    for y, x in fg_segment:
+        mask[y, x] = HARD_FG
+
+    # set background (outside) based on mincut result
+    for y, x in bg_segment:
+        mask[y, x] = HARD_BG
     return mask
 
 
@@ -392,15 +405,32 @@ def check_convergence(energy):
     return convergence
 
 
-def cal_metric(predicted_mask, gt_mask):
-    # TODO: implement metric calculation
+def cal_metric(predicted_mask: np.ndarray, gt_mask: np.ndarray) -> tuple[float, float]:
+    """
+    Calculate evaluation metrics for the predicted mask compared to the ground truth mask.
+    :param predicted_mask: Predicted mask (H, W).
+    :param gt_mask: Ground truth mask (H, W).
+    :return: Tuple containing Intersection over Union (IoU) and Dice Coefficient.
+    """
+    # Convert masks to boolean arrays
+    predicted_mask = predicted_mask.astype(bool)
+    gt_mask = gt_mask.astype(bool)
 
-    return 100, 100
+    # Intersection and union for IoU
+    intersection = np.logical_and(predicted_mask, gt_mask)
+    union = np.logical_or(predicted_mask, gt_mask)
+    iou = np.sum(intersection) / np.sum(union) if np.sum(union) != 0 else 0
+
+    # Intersection for Dice Coefficient
+    intersection_sum = np.sum(intersection)
+    dice = (2 * intersection_sum) / (np.sum(predicted_mask) + np.sum(gt_mask)) if (np.sum(predicted_mask) + np.sum(gt_mask)) != 0 else 0
+
+    return iou * 100, dice * 100
 
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
+    parser.add_argument('--input_name', type=str, default='grave', help='name of image from the course files')
     parser.add_argument('--eval', type=int, default=1, help='calculate the metrics')
     parser.add_argument('--input_img_path', type=str, default='', help='if you wish to use your own img_path')
     parser.add_argument('--use_file_rect', type=int, default=1, help='Read rect from course files')
@@ -425,6 +455,13 @@ if __name__ == '__main__':
 
     img = cv2.imread(input_path)
 
+    #test case - todo: delete later
+    img = np.ones((500,500,3))
+    img*=255
+    img[200:300, 250:350] = (255,0,0)
+
+    rect = (20, 20, 400,400)
+
     # Run the GrabCut algorithm on the image and bounding box
     mask, bgGMM, fgGMM = grabcut(img, rect)
     mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
@@ -433,8 +470,8 @@ if __name__ == '__main__':
     if args.eval:
         gt_mask = cv2.imread(f'data/seg_GT/{args.input_name}.bmp', cv2.IMREAD_GRAYSCALE)
         gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
-        acc, jac = cal_metric(mask, gt_mask)
-        print(f'Accuracy={acc}, Jaccard={jac}')
+        # acc, jac = cal_metric(mask, gt_mask)
+        # print(f'Accuracy={acc}, Jaccard={jac}')
 
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
