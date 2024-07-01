@@ -1,5 +1,6 @@
 import cv2
 import argparse
+import warnings
 import numpy as np
 import igraph as ig
 from sklearn.cluster import KMeans
@@ -16,16 +17,18 @@ SOFT_FG = GC_PR_FGD
 
 # convergence parameters
 EPSILON = 1e-4
-MIN_ENERGY = float('inf')
+CONVERGE = 2000
+PREV_ENERGY = 0
 
 # define the eight directions for neighbors
 EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 3):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 20):
     # Assign initial labels to the pixels based on the bounding box
     # Initialize all cells as Background
+    global PREV_ENERGY
     mask = np.zeros(img.shape[:2], dtype=np.uint8) * HARD_BG
     x, y, w, h = rect
 
@@ -43,16 +46,19 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 3):
     beta = calculate_beta(img=img)
 
     for i in range(n_iter):
-        print(f'iter {i + 1} of {n_iter}')
+
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, beta)
 
         mask = update_mask(mincut_sets, mask)
 
-        if check_convergence(energy):
+        if check_convergence(energy-PREV_ENERGY):
             break
 
+        PREV_ENERGY = energy
+
+    print(f'Converged in {i + 1}/{n_iter} iterations')
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
@@ -227,29 +233,6 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     h, w, c = img.shape
     pixels = img.reshape(-1, 3)
 
-    # TODO: DELETE OLD
-    # likelihoods = np.zeros((h, w))
-    #
-    # for i in range(gmm.n_components):
-    #     mean = gmm.means_[i]
-    #     cov = gmm.covariances_[i]
-    #     weight = gmm.weights_[i]
-    #     inv_cov = np.linalg.inv(cov)
-    #     det_cov = np.linalg.det(cov)
-    #
-    #     norm_factor = weight / np.sqrt(det_cov)
-    #
-    #     # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
-    #     diff = pixels - mean
-    #     exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
-    #
-    #     likelihoods += norm_factor * exp
-    #
-    # # ensures numerical stability by preventing a log of zero.
-    # likelihoods += 1e-10
-    # likelihoods = -np.log(likelihoods)
-    #
-    # return likelihoods
     return -gmm.score_samples(pixels).reshape(h, w)
 
 
@@ -311,23 +294,19 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
     edges = []
     capacities = []
 
-    # Flatten the foreground and background probabilities
-    fg_flat = fg_probs.flatten()
-    bg_flat = bg_probs.flatten()
-
-    # Create pixel indices
+    # create pixel indices
     pixel_indices = np.arange(h * w).reshape(h, w)
 
-    # Add edges from source to pixels and pixels to sink
+    # add edges from source to pixels and pixels to sink
     source_edges = np.column_stack((np.full(h * w, source), pixel_indices.flatten()))
     sink_edges = np.column_stack((pixel_indices.flatten(), np.full(h * w, sink)))
 
     edges.extend(source_edges)
     edges.extend(sink_edges)
-    capacities.extend(fg_flat)
-    capacities.extend(bg_flat)
+    capacities.extend(fg_probs.flatten())
+    capacities.extend(bg_probs.flatten())
 
-    # Calculate neighbor indices
+    # calculate neighbor indices
     for i, (dy, dx) in enumerate(EIGHT_DIR):
         ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
         valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
@@ -341,39 +320,13 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
         neighbor_capacities = N_link_weights[:, :, i][valid_mask]
         capacities.extend(neighbor_capacities)
 
-    # Convert edges and capacities to the format required by the graph library
+    # convert edges and capacities to the format required by the graph library
     edges = np.array(edges)
     capacities = np.array(capacities)
 
-    # Add the edges and their capacities to the graph
+    # add the edges and their capacities to the graph
     graph.add_edges(edges.tolist())
     graph.es['capacity'] = capacities.tolist()
-    # TODO: DELETE OLD
-    # edges = []
-    # capacities = []
-    #
-    # for y in range(h):
-    #     for x in range(w):
-    #         pixel_index = y * w + x
-    #         # add edge from source to current pixel with capacity fg_probs
-    #         edges.append((source, pixel_index))
-    #         capacities.append(fg_probs[y, x])  # T-link to source
-    #
-    #         # add edge from source to current pixel with capacity fg_probs
-    #         edges.append((pixel_index, sink))
-    #         capacities.append(bg_probs[y, x])  # T-link to sink
-    #
-    #         # add edges for all valid neighbors
-    #         for i, (dy, dx) in enumerate(EIGHT_DIR):
-    #             ny, nx = y + dy, x + dx
-    #             if 0 <= ny < h and 0 <= nx < w:
-    #                 neighbor_index = ny * w + nx
-    #                 edges.append((pixel_index, neighbor_index))
-    #                 capacities.append(N_link_weights[y, x, i])  # N-link weight
-    #
-    # # add the edges and their capacities to the graph
-    # graph.add_edges(edges)
-    # graph.es['capacity'] = capacities
 
     return graph
 
@@ -429,10 +382,11 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
 
 
 def check_convergence(energy):
-    global MIN_ENERGY
-    convergence = MIN_ENERGY - energy < EPSILON
-    MIN_ENERGY = min(MIN_ENERGY, energy)
-    return convergence
+    if abs(energy) < CONVERGE:
+        print(f'min energy{energy}')
+        return True
+    else:
+        return False
 
 
 def cal_metric(predicted_mask: np.ndarray, gt_mask: np.ndarray) -> tuple[float, float]:
@@ -470,9 +424,9 @@ def parse():
 
 
 if __name__ == '__main__':
+    warnings.filterwarnings('ignore')
     # Load an example image and define a bounding box around the object of interest
     args = parse()
-    print(args)
 
     if args.input_img_path == '':
         input_path = f'data/imgs/{args.input_name}.jpg'
