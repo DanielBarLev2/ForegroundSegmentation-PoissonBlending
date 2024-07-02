@@ -5,7 +5,7 @@ import numpy as np
 
 from grabcut import grabcut, cal_metric
 
-N_ITER = 5
+N_ITER = 10
 
 def parse(img_name: str):
     parser = argparse.ArgumentParser()
@@ -51,7 +51,7 @@ if __name__ == '__main__':
                 gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
                 acc, jac = cal_metric(mask, gt_mask)
                 print(f'Accuracy = {acc}%, Jaccard = {jac}%')
-                if acc < 85:
+                if acc < 97:
                     print(f' *FAIL* for {image}')
                 else:
                     print(f' *SUCCESS* for {image}')
