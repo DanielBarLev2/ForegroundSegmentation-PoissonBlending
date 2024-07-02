@@ -17,7 +17,7 @@ SOFT_FG = GC_PR_FGD
 
 # convergence parameters
 EPSILON = 1e-4
-CONVERGE = 2000
+CONVERGE = 1500
 PREV_ENERGY = 0
 
 # define the eight directions for neighbors
@@ -370,14 +370,14 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
     :return: Updated mask with foreground and background regions marked.
     """
     fg_segment, bg_segment = mincut_sets
+    fg_indices = np.array(fg_segment)
+    bg_indices = np.array(bg_segment)
 
     # set foreground (inside) based on mincut result
-    for y, x in fg_segment:
-        mask[y, x] = SOFT_FG
+    mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
 
     # set background (outside) based on mincut result
-    for y, x in bg_segment:
-        mask[y, x] = HARD_BG
+    mask[bg_indices[:, 0], bg_indices[:, 1]] = HARD_BG
     return mask
 
 
