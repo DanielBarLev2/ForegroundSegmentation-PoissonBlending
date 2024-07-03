@@ -8,35 +8,6 @@ from scipy.sparse.linalg import spsolve
 FOUR_DIR = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
 
-# def get_border(mask: np.ndarray) -> np.ndarray:
-#     laplacian_kernel = np.array([[0, 1, 0],
-#                                  [1, -4, 1],
-#                                  [0, 1, 0]])
-#
-#     border = convolve(mask, laplacian_kernel)
-#
-#     return
-
-
-# def solve_poisson_equation(gradients):
-#     # Assuming gradients is a 2D array containing gradients
-#     h, w = gradients.shape
-#
-#     # Construct the Laplacian matrix (using a 5-point stencil)
-#     laplacian = diags([-1, 4, -1], [-1, 0, 1], shape=(h * w, h * w))
-#
-#     # Flatten gradients into a vector
-#     v_flat = gradients.flatten()
-#
-#     # Solve the linear system A u = v
-#     u_flat = spsolve(laplacian, v_flat)
-#
-#     # Reshape u_flat back to a 2D grid
-#     u = u_flat.reshape((h, w))
-#
-#     return u
-
-
 def poisson_blend(im_src: np.ndarray, im_tgt: np.ndarray, im_mask: np.ndarray, center: tuple[int, int]) -> np.ndarray:
     A = construct_A_matrix(mask=im_mask // 255)
     # b = create_b_vector()
@@ -145,6 +116,7 @@ if __name__ == "__main__":
     center = (center_col, center_row)
 
     im_clone = blend_images(im_src, im_tgt, im_mask, center)
+
     cv2.imshow('Cloned image', im_clone)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
