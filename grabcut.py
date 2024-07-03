@@ -10,6 +10,7 @@ GC_BGD = 0  # Hard bg pixel
 GC_FGD = 1  # Hard fg pixel, will not be used
 GC_PR_BGD = 2  # Soft bg pixel
 GC_PR_FGD = 3  # Soft fg pixel
+
 HARD_BG = GC_BGD
 HARD_FG = GC_FGD
 SOFT_BG = GC_PR_BGD
@@ -17,7 +18,7 @@ SOFT_FG = GC_PR_FGD
 
 # convergence parameters
 EPSILON = 1e-4
-CONVERGE = 1500
+CONVERGE = 100
 PREV_ENERGY = 0
 
 # define the eight directions for neighbors
@@ -25,7 +26,7 @@ EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 20):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30):
     # Assign initial labels to the pixels based on the bounding box
     # Initialize all cells as Background
     global PREV_ENERGY
@@ -41,13 +42,14 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 20):
     # Initialize center pixel to Foreground - Strong. deleted since not documented
     # mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = HARD_FG
 
-    bgGMM, fgGMM = initalize_GMMs(img, mask)
+    n_components = 5
+    bgGMM, fgGMM = initalize_GMMs(img, mask, n_components)
 
     beta = calculate_beta(img=img)
 
     for i in range(n_iter):
 
-        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM)
+        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, n_components)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, beta)
 
@@ -117,7 +119,7 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     :return: updated Gaussian Mixture Model (mean, weights, covariances).
     """
     # evaluate the components' density for each sample.
-    predictions = gmm.predict_proba(img)
+    predictions = gmm.predict_proba(img.reshape(-1, img.shape[-1]))
 
     weights = np.sum(predictions, axis=0) + EPSILON
 
@@ -143,10 +145,14 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     return gmm
 
 
-def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM: GaussianMixture) \
-        -> tuple[GaussianMixture, GaussianMixture]:
+def update_GMMs(img: np.ndarray,
+                mask: np.ndarray,
+                bgGMM: GaussianMixture,
+                fgGMM: GaussianMixture,
+                n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
     """
     updates foreground and background Gaussian Mixture Models from a new mask.
+    :param n_components: n_components.
     :param img: (H, W, C) RGB image.
     :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param bgGMM: background Gaussian Mixture Model.
@@ -155,8 +161,8 @@ def update_GMMs(img: np.ndarray, mask: np.ndarray, bgGMM: GaussianMixture, fgGMM
     """
     fore_trimap, back_trimap = get_trimaps(img=img.reshape(-1, 3), mask=mask)
 
-    bgGMM = update_parameters(img=back_trimap, gmm=bgGMM)
-    fgGMM = update_parameters(img=fore_trimap, gmm=fgGMM)
+    bgGMM = update_parameters(img=back_trimap, gmm=bgGMM, n_components=n_components)
+    fgGMM = update_parameters(img=fore_trimap, gmm=fgGMM, n_components=n_components)
 
     return bgGMM, fgGMM
 
@@ -262,11 +268,8 @@ def calculate_T_link_weights(img: np.ndarray,
     fg_probs = np.zeros_like(fg_likelihood)
     bg_probs = np.zeros_like(bg_likelihood)
 
-    fg_probs[mask == HARD_BG] = 0  # HARD_BG -> set 0; redundant - TODO:delete?
     bg_probs[mask == HARD_BG] = K  # HARD_BG -> set K
-
     fg_probs[mask == HARD_FG] = K  # HARD_FG -> set K
-    bg_probs[mask == HARD_FG] = 0  # HARD_FG -> set 0; redundant - TODO:delete?
 
     pixel_unknown = np.logical_or(mask == SOFT_FG, mask == SOFT_BG)
     fg_probs[pixel_unknown] = bg_likelihood[pixel_unknown]  # SOFT_FG|SOFT_BG -> D(m)
@@ -285,46 +288,35 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
     :param N_link_weights: N-link weights for each pixel and its neighbors.
     :return: an igraph Graph object with edges and capacities set.
     """
-    # initialize an empty graph
+    # Initialize an empty graph
     graph = ig.Graph()
     graph.add_vertices(h * w + 2)  # Pixels + Source + Sink
     source = h * w  # Source node index
     sink = h * w + 1  # Sink node index
 
-    edges = []
-    capacities = []
-
-    # create pixel indices
     pixel_indices = np.arange(h * w).reshape(h, w)
 
-    # add edges from source to pixels and pixels to sink
+    # Create source and sink edges with capacities
     source_edges = np.column_stack((np.full(h * w, source), pixel_indices.flatten()))
     sink_edges = np.column_stack((pixel_indices.flatten(), np.full(h * w, sink)))
+    edges = np.vstack((source_edges, sink_edges))
+    capacities = np.hstack((fg_probs.flatten(), bg_probs.flatten()))
 
-    edges.extend(source_edges)
-    edges.extend(sink_edges)
-    capacities.extend(fg_probs.flatten())
-    capacities.extend(bg_probs.flatten())
-
-    # calculate neighbor indices
-    for i, (dy, dx) in enumerate(EIGHT_DIR):
+    # Calculate neighbor indices and add N-link edges
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+    for i, (dy, dx) in enumerate(directions):
         ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
         valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
 
         pixel_indices_flat = pixel_indices[valid_mask]
         neighbor_indices_flat = pixel_indices[ny[valid_mask], nx[valid_mask]]
-
         neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
-        edges.extend(neighbor_edges)
+        edges = np.vstack((edges, neighbor_edges))
 
         neighbor_capacities = N_link_weights[:, :, i][valid_mask]
-        capacities.extend(neighbor_capacities)
+        capacities = np.hstack((capacities, neighbor_capacities))
 
-    # convert edges and capacities to the format required by the graph library
-    edges = np.array(edges)
-    capacities = np.array(capacities)
-
-    # add the edges and their capacities to the graph
+    # Convert edges and capacities to the format required by the graph library
     graph.add_edges(edges.tolist())
     graph.es['capacity'] = capacities.tolist()
 
@@ -415,7 +407,7 @@ def cal_metric(predicted_mask: np.ndarray, gt_mask: np.ndarray) -> tuple[float, 
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_name', type=str, default='flower', help='name of image from the course files')
+    parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
     parser.add_argument('--eval', type=int, default=1, help='calculate the metrics')
     parser.add_argument('--input_img_path', type=str, default='', help='if you wish to use your own img_path')
     parser.add_argument('--use_file_rect', type=int, default=1, help='Read rect from course files')

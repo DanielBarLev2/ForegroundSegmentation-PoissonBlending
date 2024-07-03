@@ -39,7 +39,6 @@ if __name__ == '__main__':
 
         img = cv2.imread(input_path)
 
-
         # Run the GrabCut algorithm on the image and bounding box
         try:
             mask, bgGMM, fgGMM = grabcut(img, rect, N_ITER)
@@ -58,11 +57,11 @@ if __name__ == '__main__':
 
             # Apply the final mask to the input image and display the results
             img_cut = img * (mask[:, :, np.newaxis])
-            # cv2.imshow('Original Image', img)
-            # cv2.imshow('GrabCut Mask', 255 * mask)
+            cv2.imshow('Original Image', img)
+            cv2.imshow('GrabCut Mask', 255 * mask)
             cv2.imshow('GrabCut Result', img_cut)
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
             print("- - - - - - - - - - - - -")
         except:
             print("Error")
