@@ -140,10 +140,9 @@ if __name__ == "__main__":
         im_mask = cv2.imread(args.mask_path, cv2.IMREAD_GRAYSCALE)
         im_mask = cv2.threshold(im_mask, 0, 255, cv2.THRESH_BINARY)[1]
 
-    center = (int(im_tgt.shape[1] / 2), int(im_tgt.shape[0] / 2))
-
-    # im_clone = poisson_blend(im_src, im_tgt, im_mask, center)
-    # im_clone = poisson_blend(im_src, im_tgt, im_mask, center)
+    center_col = int(im_tgt.shape[1] / 2)
+    center_row = int(im_tgt.shape[0] / 2)
+    center = (center_col, center_row)
 
     im_clone = blend_images(im_src, im_tgt, im_mask, center)
     cv2.imshow('Cloned image', im_clone)

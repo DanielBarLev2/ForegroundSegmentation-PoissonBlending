@@ -20,6 +20,7 @@ SOFT_FG = GC_PR_FGD
 EPSILON = 1e-4
 CONVERGE = 100
 PREV_ENERGY = 0
+LAMBDA = 1
 
 # define the eight directions for neighbors
 EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])
@@ -47,11 +48,13 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30):
 
     beta = calculate_beta(img=img)
 
+    N_link_weights = LAMBDA * calculate_N_link_weights(img=img, beta=beta)
+
     for i in range(n_iter):
 
         bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, n_components)
 
-        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, beta)
+        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, N_link_weights)
 
         mask = update_mask(mincut_sets, mask)
 
@@ -131,7 +134,7 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     for k in range(n_components):
         diff = img.reshape(-1, img.shape[-1]) - means[k]
         cov = np.dot((predictions[:, k][:, np.newaxis] * diff).T, diff) / weights[k]
-        cov += np.eye(cov.shape[0]) * EPSILON  # ensure that cov does not contain 0 on main diagonal -> inv is positive
+        cov += np.eye(cov.shape[0]) * EPSILON # ensure that cov does not contain 0 on main diagonal -> inv is positive
         covariances.append(cov)
 
     weights /= weights.sum()
@@ -327,7 +330,7 @@ def calculate_mincut(img: np.ndarray,
                      mask: np.ndarray,
                      bgGMM: GaussianMixture,
                      fgGMM: GaussianMixture,
-                     beta: float) -> tuple[tuple[list[tuple[int, int]], list[tuple[int, int]]], float]:
+                     N_link_weights: np.ndarray) -> tuple[tuple[list[tuple[int, int]], list[tuple[int, int]]], float]:
     """
     Calculate the minimum cut between neighboring pixels.
     :param img: (H, W, C) RGB image.
@@ -339,7 +342,6 @@ def calculate_mincut(img: np.ndarray,
     """
     h, w, c = img.shape
 
-    N_link_weights = calculate_N_link_weights(img=img, beta=beta)
     k = np.max(N_link_weights)
     fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
     graph = build_graph(h, w, fg_probs, bg_probs, N_link_weights)
