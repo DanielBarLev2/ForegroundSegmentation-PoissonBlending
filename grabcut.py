@@ -27,7 +27,7 @@ EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 
 
 
 # Define the GrabCut algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30, gmm_components: int = 5):
     # Assign initial labels to the pixels based on the bounding box
     # Initialize all cells as Background
     global PREV_ENERGY
@@ -43,8 +43,8 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30):
     # Initialize center pixel to Foreground - Strong. deleted since not documented
     # mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = HARD_FG
 
-    n_components = 5
-    bgGMM, fgGMM = initalize_GMMs(img, mask, n_components)
+    # todo: updateGMM is immediately after init - maybe add into update GMM with option to set the GMMs as None -> Init
+    bgGMM, fgGMM = initalize_GMMs(img, mask, gmm_components)
 
     beta = calculate_beta(img=img)
 
@@ -52,18 +52,18 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30):
 
     for i in range(n_iter):
 
-        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, n_components)
+        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, gmm_components)
 
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, N_link_weights)
 
         mask = update_mask(mincut_sets, mask)
 
-        if check_convergence(energy-PREV_ENERGY):
+        if check_convergence(energy - PREV_ENERGY):
+            print(f'Converged in {i + 1}/{n_iter} iterations')
             break
 
         PREV_ENERGY = energy
 
-    print(f'Converged in {i + 1}/{n_iter} iterations')
     # Return the final mask and the GMMs
     return mask, bgGMM, fgGMM
 
@@ -103,10 +103,12 @@ def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> 
     # init n GMM components with n clusters for foreground and background
     fgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     fgGMM.means_ = fore_kmeans.cluster_centers_
+    # todo: change fit to manual model update
     fgGMM.fit(fore_trimap)
 
     bgGMM = GaussianMixture(n_components=n_components, covariance_type='full', random_state=0)
     bgGMM.means_ = back_kmeans.cluster_centers_
+    # todo: change fit to manual model update
     bgGMM.fit(back_trimap)
 
     return bgGMM, fgGMM
@@ -206,6 +208,7 @@ def calculate_beta(img: np.ndarray) -> float:
     return 1 / (2 * beta)
 
 
+# todo: there are duplicate links here (bi-directional) maybe can remove half to improve timing
 def calculate_N_link_weights(img: np.ndarray, beta: float) -> np.ndarray:
     """
     Calculate the weights between neighboring pixels, computed using the intensity differences and the β value.
@@ -241,7 +244,7 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     """
     h, w, c = img.shape
     pixels = img.reshape(-1, 3)
-
+    # todo: dont hate me, but is this allowed? or should we re-write the entire formula?
     return -gmm.score_samples(pixels).reshape(h, w)
 
 
@@ -305,20 +308,20 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
     edges = np.vstack((source_edges, sink_edges))
     capacities = np.hstack((fg_probs.flatten(), bg_probs.flatten()))
 
+    # todo: this can be removed and calculated once after N-links. should improve timing
     # Calculate neighbor indices and add N-link edges
-    directions = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-    for i, (dy, dx) in enumerate(directions):
+    for i, (dy, dx) in enumerate(EIGHT_DIR):
         ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
         valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
 
         pixel_indices_flat = pixel_indices[valid_mask]
         neighbor_indices_flat = pixel_indices[ny[valid_mask], nx[valid_mask]]
+
         neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
         edges = np.vstack((edges, neighbor_edges))
 
         neighbor_capacities = N_link_weights[:, :, i][valid_mask]
         capacities = np.hstack((capacities, neighbor_capacities))
-
     # Convert edges and capacities to the format required by the graph library
     graph.add_edges(edges.tolist())
     graph.es['capacity'] = capacities.tolist()
@@ -367,14 +370,15 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
     fg_indices = np.array(fg_segment)
     bg_indices = np.array(bg_segment)
 
-    # set foreground (inside) based on mincut result
+    # set foreground (inside) based on mincut result todo: test if necessary
     mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
 
-    # set background (outside) based on mincut result
+    # set background (outside) based on mincut result todo: why hard?
     mask[bg_indices[:, 0], bg_indices[:, 1]] = HARD_BG
     return mask
 
 
+# todo: create an intelligent convergence check
 def check_convergence(energy):
     if abs(energy) < CONVERGE:
         print(f'min energy{energy}')
