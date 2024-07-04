@@ -60,6 +60,8 @@ if __name__ == '__main__':
             cv2.imshow('Original Image', img)
             cv2.imshow('GrabCut Mask', 255 * mask)
             cv2.imshow('GrabCut Result', img_cut)
+            save_path = f'data/results/GrabCut/{input_path.split("/")[-1].split(".")[0] + "_result.png"}'
+            cv2.imwrite(save_path, img_cut, )
             cv2.waitKey(0)
             cv2.destroyAllWindows()
             print("- - - - - - - - - - - - -")
