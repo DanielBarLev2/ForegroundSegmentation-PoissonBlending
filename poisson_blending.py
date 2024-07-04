@@ -8,56 +8,6 @@ from scipy.sparse.linalg import spsolve
 FOUR_DIR = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
 
-def poisson_blend(im_src: np.ndarray, im_tgt: np.ndarray, im_mask: np.ndarray, center: tuple[int, int]) -> np.ndarray:
-    A = construct_A_matrix(mask=im_mask // 255)
-    # b = create_b_vector()
-    # x = blend_images(A, b)
-    return A
-
-
-def construct_A_matrix(mask, num_roi_pixels, mask_indices, index_map):
-    h, w = mask.shape
-    A = lil_matrix((num_roi_pixels, num_roi_pixels))
-
-    for index, flat_coordinate in enumerate(mask_indices):
-        A[index, index] = -4
-        row, col = divmod(flat_coordinate, w)
-
-        for (d_row, d_col) in FOUR_DIR:
-            neighbor_x, neighbor_y = row + d_row, col + d_col
-            neighbor_flat_coordinate = (neighbor_x * w + neighbor_y)
-
-            if neighbor_flat_coordinate in mask_indices:
-                neighbor_index = index_map[neighbor_flat_coordinate]
-                A[index, neighbor_index] = 1
-
-    return csr_matrix(A)
-
-
-def create_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map):
-    h, w = mask.shape
-    b = np.zeros((num_roi_pixels, 3))
-    center_col, center_row = center
-
-    for index, flat_coordinate in enumerate(mask_indices):
-        row, col = divmod(flat_coordinate, w)
-        b[index] = -4 * source[row, col]
-
-        for (d_row, d_col) in FOUR_DIR:
-            neighbor_row, neighbor_col = row + d_row, col + d_col
-
-            if 0 <= neighbor_row < h and 0 <= neighbor_col < w:
-                b[index] += source[neighbor_row, neighbor_col]
-
-            neighbor_flat_coordinate = (neighbor_row * w + neighbor_col)
-            if neighbor_flat_coordinate not in mask_indices:
-                target_row = (neighbor_row - h // 2) + center_row
-                target_col = (neighbor_col - w // 2) + center_col
-                b[index] -= target[target_row, target_col]
-
-    return b
-
-
 def create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map):
     h, w = mask.shape
     A = lil_matrix((num_roi_pixels, num_roi_pixels))
@@ -91,17 +41,14 @@ def blend_images(source, target, mask, center):
 
     mask_indices = np.where(mask.flatten() == 1)[0]
     num_roi_pixels = len(mask_indices)
+
     # indexing pixel position in mask with natural numbers' order
     index_map = {linear_index: idx for idx, linear_index in enumerate(mask_indices)}
-
-    # A = construct_A_matrix(mask, num_roi_pixels, mask_indices, index_map)
-    # b = create_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map)
 
     A, b = create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map)
     X = spsolve(A, b).clip(0, 255)
 
     result = target.copy()
-
     rows, cols = mask.shape
     target_rows, target_cols, channels = target.shape
     for index, linear_index in enumerate(mask_indices):
