@@ -2,7 +2,7 @@ import argparse
 import warnings
 import cv2
 import numpy as np
-
+import time
 from grabcut import grabcut, cal_metric
 
 N_ITER = 10
@@ -39,13 +39,15 @@ if __name__ == '__main__':
 
         img = cv2.imread(input_path)
 
-        # Run the GrabCut algorithm on the image and bounding box
+        # Run the GrabCutResult algorithm on the image and bounding box
         try:
+            s = time.process_time()
             mask, bgGMM, fgGMM = grabcut(img, rect, N_ITER)
             mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
-
+            convergence_time = time.process_time() - s
             # Print metrics only if requested (valid only for course files)
             if args.eval:
+                print(f"{convergence_time=}")
                 gt_mask = cv2.imread(f'data/seg_GT/{args.input_name}.bmp', cv2.IMREAD_GRAYSCALE)
                 gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
                 acc, jac = cal_metric(mask, gt_mask)
@@ -58,12 +60,15 @@ if __name__ == '__main__':
             # Apply the final mask to the input image and display the results
             img_cut = img * (mask[:, :, np.newaxis])
             cv2.imshow('Original Image', img)
-            cv2.imshow('GrabCut Mask', 255 * mask)
-            cv2.imshow('GrabCut Result', img_cut)
-            save_path = f'data/results/GrabCut/{input_path.split("/")[-1].split(".")[0] + "_result.png"}'
-            cv2.imwrite(save_path, img_cut, )
+            cv2.imshow('GrabCutResult Mask', mask*255)
+            cv2.imshow('GrabCutResult Result', img_cut)
+
+            img_save_path = f'data/results/GrabCutResult/{input_path.split("/")[-1].split(".")[0] + "_result.png"}'
+            mask_save_path = f'data/results/GrabCutMasks/{input_path.split("/")[-1].split(".")[0] + "_mask.png"}'
+            # cv2.imwrite(img_save_path, img_cut, )
+            # cv2.imwrite(mask_save_path, mask*255)
             cv2.waitKey(0)
-            cv2.destroyAllWindows()
+            # cv2.destroyAllWindows()
             print("- - - - - - - - - - - - -")
         except:
             print("Error")

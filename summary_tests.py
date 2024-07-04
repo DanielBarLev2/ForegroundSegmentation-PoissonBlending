@@ -36,7 +36,7 @@ if __name__ == "__main__":
     boundary_box_test_images = []
 
     poisson_test_images = (
-        ("grass_mountains.jpeg", ["bush", "llama", "sheep", "grave", ]),
+        ("grass_mountains.jpeg", [("bush", ), "llama", "sheep", "grave", ]),
         ("table.jpg", ["banana1", "banana2", "book", "teddy"]),
         ("wall.jpg", ["flower", "fullmoon", "memorial", "stone2", "cross"])
     )
@@ -78,7 +78,7 @@ if __name__ == "__main__":
         center_col = int(im_tgt.shape[1] / 2)
         center_row = int(im_tgt.shape[0] / 2)
         center = (center_col, center_row)
-        for img_name in src_images:
+        for img_name,center in src_images:
             im_src = cv2.imread(f"data/imgs/{img_name}.jpg", cv2.IMREAD_COLOR)
             im_mask = cv2.imread(f"data/seg_GT/{img_name}.bmp", cv2.IMREAD_GRAYSCALE)
             im_mask = cv2.threshold(im_mask, 0, 255, cv2.THRESH_BINARY)[1]
