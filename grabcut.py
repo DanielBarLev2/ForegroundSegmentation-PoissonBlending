@@ -1,6 +1,6 @@
-import time
-
 import cv2
+import pstats
+import cProfile
 import argparse
 import warnings
 import numpy as np
@@ -28,11 +28,8 @@ LAMBDA = 1
 EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])  # bidirectional way
 
 
-# EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1)]) # one directional way
-
-
 # Define the GrabCutResult algorithm function
-def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30, gmm_components: int = 5):
+def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 10, gmm_components: int = 5):
     # Assign initial labels to the pixels based on the bounding box
     # Initialize all cells as Background
     global PREV_ENERGY
@@ -48,34 +45,24 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30, gmm_compon
     # Initialize center pixel to Foreground - Strong. deleted since not documented
     # mask[rect[1] + rect[3] // 2, rect[0] + rect[2] // 2] = HARD_FG
 
-    # todo: updateGMM is immediately after init - maybe add into update GMM with option to set the GMMs as None -> Init
     bgGMM, fgGMM = initalize_GMMs(img, mask, gmm_components)
-    s = time.process_time()
     beta = calculate_beta(img=img)
-    print(f"beta time = {time.process_time() - s}")
-    s = time.process_time()
 
     N_link_weights = LAMBDA * calculate_N_link_weights(img=img, beta=beta)
-    print(f"N_links calc time = {time.process_time() - s}")
-    s = time.process_time()
     N_link_edges, N_link_capacities = format_n_links(N_link_weights, img.shape[0], img.shape[1])
-    print(f"N_links format time = {time.process_time() - s}")
+
     for i in range(n_iter):
-        print(i)
-        s = time.process_time()
+
         if i != 0:
             bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, gmm_components)
-        print(f"update gmm time = {time.process_time() - s}")
+
         mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, N_link_edges, N_link_capacities)
 
-        s = time.process_time()
         mask = update_mask(mincut_sets, mask)
-        print(f"update mask time = {time.process_time() - s}")
-        s = time.process_time()
+
         if check_convergence(energy - PREV_ENERGY):
             print(f'Converged in {i + 1}/{n_iter} iterations')
             break
-        print(f"convergnece time = {time.process_time() - s}")
         PREV_ENERGY = energy
 
     # Return the final mask and the GMMs
@@ -405,26 +392,18 @@ def calculate_mincut(img: np.ndarray,
     :return: Tuple containing foreground/background segments and the energy value.
     """
     h, w, c = img.shape
-    s = time.process_time()
-    k = np.max(N_link_weights)
-    print(f"K time = {time.process_time() - s}")
-    s = time.process_time()
-    fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
-    print(f"T_link time = {time.process_time() - s}")
-    s = time.process_time()
-    graph = build_graph(h, w, fg_probs, bg_probs, N_link_edges, N_link_weights)
-    print(f"build graph time = {time.process_time() - s}")
 
-    s = time.process_time()
+    k = np.max(N_link_weights)
+
+    fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
+    graph = build_graph(h, w, fg_probs, bg_probs, N_link_edges, N_link_weights)
     min_cut = graph.st_mincut(h * w, h * w + 1, capacity='capacity')
     energy = min_cut.value
-    print(f"mincut time = {time.process_time() - s}")
 
-    s = time.process_time()
     # get segments without source and sink, convert vertex index to (x,y) coordinates
     fg_segment = [(v // w, v % w) for v in min_cut.partition[0] if v != h * w]
     bg_segment = [(v // w, v % w) for v in min_cut.partition[1] if v != h * w + 1]
-    print(f"seperating segments time = {time.process_time() - s}")
+
     return (fg_segment, bg_segment), energy
 
 
@@ -492,6 +471,9 @@ def parse():
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
+    profiler = cProfile.Profile()
+    profiler.enable()
+
     # Load an example image and define a bounding box around the object of interest
     args = parse()
 
@@ -520,8 +502,16 @@ if __name__ == '__main__':
 
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
+
+    profiler.disable()
+    profiler.print_stats(sort='cumulative')
+    profiler.dump_stats('profile_output.prof')
+    p = pstats.Stats('profile_output.prof')
+    p.strip_dirs().sort_stats('cumulative').print_stats('grabcut')
+
     cv2.imshow('Original Image', img)
     cv2.imshow('GrabCutResult Mask', 255 * mask)
     cv2.imshow('GrabCutResult Result', img_cut)
+
     cv2.waitKey(0)
     cv2.destroyAllWindows()
