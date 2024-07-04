@@ -1,3 +1,5 @@
+import time
+
 import cv2
 import argparse
 import warnings
@@ -23,10 +25,13 @@ PREV_ENERGY = 0
 LAMBDA = 1
 
 # define the eight directions for neighbors
-EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])
+EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)])  # bidirectional way
 
 
-# Define the GrabCut algorithm function
+# EIGHT_DIR = np.array([(0, 1), (-1, 1), (-1, 0), (-1, -1)]) # one directional way
+
+
+# Define the GrabCutResult algorithm function
 def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30, gmm_components: int = 5):
     # Assign initial labels to the pixels based on the bounding box
     # Initialize all cells as Background
@@ -45,23 +50,32 @@ def grabcut(img: np.ndarray, rect: tuple[int, ...], n_iter: int = 30, gmm_compon
 
     # todo: updateGMM is immediately after init - maybe add into update GMM with option to set the GMMs as None -> Init
     bgGMM, fgGMM = initalize_GMMs(img, mask, gmm_components)
-
+    s = time.process_time()
     beta = calculate_beta(img=img)
+    print(f"beta time = {time.process_time() - s}")
+    s = time.process_time()
 
     N_link_weights = LAMBDA * calculate_N_link_weights(img=img, beta=beta)
-
+    print(f"N_links calc time = {time.process_time() - s}")
+    s = time.process_time()
+    N_link_edges, N_link_capacities = format_n_links(N_link_weights, img.shape[0], img.shape[1])
+    print(f"N_links format time = {time.process_time() - s}")
     for i in range(n_iter):
+        print(i)
+        s = time.process_time()
+        if i != 0:
+            bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, gmm_components)
+        print(f"update gmm time = {time.process_time() - s}")
+        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, N_link_edges, N_link_capacities)
 
-        bgGMM, fgGMM = update_GMMs(img, mask, bgGMM, fgGMM, gmm_components)
-
-        mincut_sets, energy = calculate_mincut(img, mask, bgGMM, fgGMM, N_link_weights)
-
+        s = time.process_time()
         mask = update_mask(mincut_sets, mask)
-
+        print(f"update mask time = {time.process_time() - s}")
+        s = time.process_time()
         if check_convergence(energy - PREV_ENERGY):
             print(f'Converged in {i + 1}/{n_iter} iterations')
             break
-
+        print(f"convergnece time = {time.process_time() - s}")
         PREV_ENERGY = energy
 
     # Return the final mask and the GMMs
@@ -88,7 +102,7 @@ def get_trimaps(img: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarr
 
 def initalize_GMMs(img: np.ndarray, mask: np.ndarray, n_components: int = 5) -> tuple[GaussianMixture, GaussianMixture]:
     """
-    Initialized Gaussian Mixture Models required for the GrabCut algorithm.
+    Initialized Gaussian Mixture Models required for the GrabCutResult algorithm.
     :param img: (H, W, C) RGB image.
     :param mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
     :param n_components: number of Gaussian mixtures to create.
@@ -136,7 +150,7 @@ def update_parameters(img: np.ndarray, gmm: GaussianMixture, n_components: int =
     for k in range(n_components):
         diff = img.reshape(-1, img.shape[-1]) - means[k]
         cov = np.dot((predictions[:, k][:, np.newaxis] * diff).T, diff) / weights[k]
-        cov += np.eye(cov.shape[0]) * EPSILON # ensure that cov does not contain 0 on main diagonal -> inv is positive
+        cov += np.eye(cov.shape[0]) * EPSILON  # ensure that cov does not contain 0 on main diagonal -> inv is positive
         covariances.append(cov)
 
     weights /= weights.sum()
@@ -208,7 +222,33 @@ def calculate_beta(img: np.ndarray) -> float:
     return 1 / (2 * beta)
 
 
-# todo: there are duplicate links here (bi-directional) maybe can remove half to improve timing
+def format_n_links(N_link_weights, h, w):
+    pixel_indices = np.arange(h * w).reshape(h, w)
+
+    # Initialize lists to accumulate neighbor edges and capacities
+    neighbor_edges_list = []
+    neighbor_capacities_list = []
+    for i, (dy, dx) in enumerate(EIGHT_DIR):
+        ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
+        valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+
+        pixel_indices_flat = pixel_indices[valid_mask]
+        neighbor_indices_flat = pixel_indices[ny[valid_mask], nx[valid_mask]]
+
+        neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
+        neighbor_capacities = N_link_weights[:, :, i][valid_mask]
+
+        # Append the results to the lists
+        neighbor_edges_list.append(neighbor_edges)
+        neighbor_capacities_list.append(neighbor_capacities)
+
+    # Concatenate all the accumulated results
+    neighbor_edges = np.concatenate(neighbor_edges_list, axis=0)
+    neighbor_capacities = np.concatenate(neighbor_capacities_list, axis=0)
+
+    return neighbor_edges, neighbor_capacities
+
+
 def calculate_N_link_weights(img: np.ndarray, beta: float) -> np.ndarray:
     """
     Calculate the weights between neighboring pixels, computed using the intensity differences and the β value.
@@ -245,7 +285,29 @@ def calculate_likelihood(img: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     h, w, c = img.shape
     pixels = img.reshape(-1, 3)
     # todo: dont hate me, but is this allowed? or should we re-write the entire formula?
-    return -gmm.score_samples(pixels).reshape(h, w)
+    likelihoods = np.zeros((h, w))
+
+    for i in range(gmm.n_components):
+        mean = gmm.means_[i]
+        cov = gmm.covariances_[i]
+        weight = gmm.weights_[i]
+        inv_cov = np.linalg.inv(cov)
+        det_cov = np.linalg.det(cov)
+
+        norm_factor = weight / np.sqrt(det_cov)
+
+        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
+        diff = pixels - mean
+        exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
+
+        likelihoods += norm_factor * exp
+
+    # ensures numerical stability by preventing a log of zero.
+    likelihoods += 1e-10
+    likelihoods = -np.log(likelihoods)
+
+    return likelihoods
+    # return -gmm.score_samples(pixels).reshape(h, w)
 
 
 def calculate_T_link_weights(img: np.ndarray,
@@ -284,7 +346,8 @@ def calculate_T_link_weights(img: np.ndarray,
     return fg_probs, bg_probs
 
 
-def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_link_weights: np.ndarray) -> ig.Graph:
+def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_link_edges: np.ndarray,
+                N_link_weights: np.ndarray) -> ig.Graph:
     """
     Helper function to build the graph for mincut calculation.
     :param h: height of the image.
@@ -303,25 +366,22 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
     pixel_indices = np.arange(h * w).reshape(h, w)
 
     # Create source and sink edges with capacities
-    source_edges = np.column_stack((np.full(h * w, source), pixel_indices.flatten()))
+    fg_probs_pos_indices = np.where(fg_probs.flatten() > 0)[0]
+    # Get the count of such elements
+    pos_count = len(fg_probs_pos_indices)
+    # Get the array of elements greater than 0
+    pos_probs = fg_probs.flatten()[fg_probs_pos_indices]
+    source_edges = np.column_stack((np.full(pos_count, source), fg_probs_pos_indices))
+    # source_edges = np.column_stack((np.full(h * w, source), pixel_indices.flatten()))
     sink_edges = np.column_stack((pixel_indices.flatten(), np.full(h * w, sink)))
+
     edges = np.vstack((source_edges, sink_edges))
-    capacities = np.hstack((fg_probs.flatten(), bg_probs.flatten()))
+    capacities = np.hstack((pos_probs.flatten(), bg_probs.flatten()))
 
-    # todo: this can be removed and calculated once after N-links. should improve timing
-    # Calculate neighbor indices and add N-link edges
-    for i, (dy, dx) in enumerate(EIGHT_DIR):
-        ny, nx = np.meshgrid(np.arange(h) + dy, np.arange(w) + dx, indexing='ij')
-        valid_mask = (ny >= 0) & (ny < h) & (nx >= 0) & (nx < w)
+    # Add neighbor edges and capacities
+    edges = np.vstack((edges, N_link_edges))
+    capacities = np.hstack((capacities, N_link_weights))
 
-        pixel_indices_flat = pixel_indices[valid_mask]
-        neighbor_indices_flat = pixel_indices[ny[valid_mask], nx[valid_mask]]
-
-        neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
-        edges = np.vstack((edges, neighbor_edges))
-
-        neighbor_capacities = N_link_weights[:, :, i][valid_mask]
-        capacities = np.hstack((capacities, neighbor_capacities))
     # Convert edges and capacities to the format required by the graph library
     graph.add_edges(edges.tolist())
     graph.es['capacity'] = capacities.tolist()
@@ -333,6 +393,7 @@ def calculate_mincut(img: np.ndarray,
                      mask: np.ndarray,
                      bgGMM: GaussianMixture,
                      fgGMM: GaussianMixture,
+                     N_link_edges: np.ndarray,
                      N_link_weights: np.ndarray) -> tuple[tuple[list[tuple[int, int]], list[tuple[int, int]]], float]:
     """
     Calculate the minimum cut between neighboring pixels.
@@ -344,18 +405,26 @@ def calculate_mincut(img: np.ndarray,
     :return: Tuple containing foreground/background segments and the energy value.
     """
     h, w, c = img.shape
-
+    s = time.process_time()
     k = np.max(N_link_weights)
+    print(f"K time = {time.process_time() - s}")
+    s = time.process_time()
     fg_probs, bg_probs = calculate_T_link_weights(img=img, mask=mask, bgGMM=bgGMM, fgGMM=fgGMM, K=k)
-    graph = build_graph(h, w, fg_probs, bg_probs, N_link_weights)
+    print(f"T_link time = {time.process_time() - s}")
+    s = time.process_time()
+    graph = build_graph(h, w, fg_probs, bg_probs, N_link_edges, N_link_weights)
+    print(f"build graph time = {time.process_time() - s}")
 
+    s = time.process_time()
     min_cut = graph.st_mincut(h * w, h * w + 1, capacity='capacity')
     energy = min_cut.value
+    print(f"mincut time = {time.process_time() - s}")
 
+    s = time.process_time()
     # get segments without source and sink, convert vertex index to (x,y) coordinates
     fg_segment = [(v // w, v % w) for v in min_cut.partition[0] if v != h * w]
     bg_segment = [(v // w, v % w) for v in min_cut.partition[1] if v != h * w + 1]
-
+    print(f"seperating segments time = {time.process_time() - s}")
     return (fg_segment, bg_segment), energy
 
 
@@ -370,7 +439,7 @@ def update_mask(mincut_sets: tuple[list[tuple[int, int]], list[tuple[int, int]]]
     fg_indices = np.array(fg_segment)
     bg_indices = np.array(bg_segment)
 
-    # set foreground (inside) based on mincut result todo: test if necessary
+    # set foreground (inside) based on mincut result
     mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
 
     # set background (outside) based on mincut result todo: why hard?
@@ -438,7 +507,7 @@ if __name__ == '__main__':
 
     img = cv2.imread(input_path)
 
-    # Run the GrabCut algorithm on the image and bounding box
+    # Run the GrabCutResult algorithm on the image and bounding box
     mask, bgGMM, fgGMM = grabcut(img, rect)
     mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
 
@@ -452,7 +521,7 @@ if __name__ == '__main__':
     # Apply the final mask to the input image and display the results
     img_cut = img * (mask[:, :, np.newaxis])
     cv2.imshow('Original Image', img)
-    cv2.imshow('GrabCut Mask', 255 * mask)
-    cv2.imshow('GrabCut Result', img_cut)
+    cv2.imshow('GrabCutResult Mask', 255 * mask)
+    cv2.imshow('GrabCutResult Result', img_cut)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
