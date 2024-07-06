@@ -57,31 +57,31 @@ def squared_color_difference(image: np.ndarray, dx: int, dy: int) -> np.ndarray:
     return squared_diff
 
 
-def update_parameters(image: np.ndarray, gmm: GaussianMixture, n_components: int = 5) -> GaussianMixture:
+def update_parameters(trimap: np.ndarray, gmm: GaussianMixture, n_components: int = 5) -> GaussianMixture:
     """
     helper function: computes weights, means, and covariances for the Gaussian Mixture Models,
      then update them respectively.
-    :param image: (H, W , C) RGB image.
+    :param trimap: (H, W , C) RGB image.
     :param gmm: Gaussian Mixture Model.
     :param n_components: number of Gaussian mixtures to create.
     :return: updated Gaussian Mixture Model (mean, weights, covariances).
     """
     # evaluate the components' density for each sample.
-    predictions = gmm.predict_proba(image.reshape(-1, image.shape[-1]))
+    predictions = gmm.predict_proba(trimap.reshape(-1, trimap.shape[-1]))
 
     weights = np.sum(predictions, axis=0) + EPSILON
 
     # means
-    means = np.dot(predictions.T, image.reshape(-1, image.shape[-1])) / weights[:, np.newaxis]
+    means = np.dot(predictions.T, trimap.reshape(-1, trimap.shape[-1])) / weights[:, np.newaxis]
 
     # covariance
-    covariances = []
+    covariances = np.ndarray((n_components,3,3))
     for k in range(n_components):
-        diff = image.reshape(-1, image.shape[-1]) - means[k]
+        diff = trimap.reshape(-1, trimap.shape[-1]) - means[k]
         cov = np.dot((predictions[:, k][:, np.newaxis] * diff).T, diff) / weights[k]
         cov += np.eye(
             cov.shape[0]) * EPSILON  # ensure that cov does not contain 0 on main diagonal -> inv is positive
-        covariances.append(cov)
+        covariances[k] = cov
 
     weights /= weights.sum()
 
@@ -89,6 +89,5 @@ def update_parameters(image: np.ndarray, gmm: GaussianMixture, n_components: int
     gmm.means_ = means
     gmm.covariances_ = covariances
     gmm.weights_ = weights
-    gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
-
+    # gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
     return gmm
