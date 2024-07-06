@@ -80,7 +80,7 @@ class GrabCut:
         k = np.max(np.sum(N_links, axis=2))
 
         for i in range(self.n_iter):
-            print(f"")
+            print(f"iter {i}")
             if i != 0:
                 self.update_GMMs()
 

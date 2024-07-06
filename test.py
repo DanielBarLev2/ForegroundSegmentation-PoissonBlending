@@ -76,6 +76,6 @@ if __name__ == '__main__':
         # cv2.imwrite(mask_save_path, mask*255)
         print("- - - - - - - - - - - - -")
 
-    print(avg_convergence_time)
-    print(avg_accuracy)
-    print(avg_jaccard)
+    print(f"{avg_convergence_time=}")
+    print(f"{avg_accuracy=}")
+    print(f"{avg_jaccard=}")
