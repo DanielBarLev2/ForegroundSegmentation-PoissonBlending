@@ -6,7 +6,16 @@ from const import EIGHT_DIR, HARD_BG, HARD_FG, SOFT_FG, SOFT_BG
 
 
 def format_n_links(N_link_weights, height, width):
-    # initialize lists to accumulate neighbor edges and capacities
+    """
+    Formats the N-link weights into edges and capacities for graph construction.
+    :param N_link_weights: The weights of the edges connecting neighboring pixels, with shape (H, W, N).
+    :param height: The height of the input image.
+    :param width: The width of the input image.
+    :return: A tuple containing two arrays:
+        - An array of edges, where each edge is represented as a tuple of connected pixel indices.
+        - An array of capacities corresponding to each edge.
+    """
+    # Initialize lists to accumulate neighbor edges and capacities
     neighbor_edges_list = []
     neighbor_capacities_list = []
 
@@ -22,7 +31,7 @@ def format_n_links(N_link_weights, height, width):
         neighbor_edges = np.column_stack((pixel_indices_flat, neighbor_indices_flat))
         neighbor_capacities = N_link_weights[:, :, i][valid_mask]
 
-        # append the results to the lists
+        # Append the results to the lists
         neighbor_edges_list.append(neighbor_edges)
         neighbor_capacities_list.append(neighbor_capacities)
 
@@ -68,32 +77,21 @@ def calculate_likelihood(image: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     :return: (H, W) - Likelihood for each pixel
     """
     h, w, c = image.shape
-    # create pixels vector [[R,G,B], [R,G,B], ...]
     pixels = image.reshape(-1, 3)
-    # initiate likelihood matrix with size of image
     likelihoods = np.zeros((h, w))
 
     for i in range(gmm.n_components):
-        # get model parameters
         mean = gmm.means_[i]
         cov = gmm.covariances_[i]
         weight = gmm.weights_[i]
         inv_cov = np.linalg.inv(cov)
         det_cov = np.linalg.det(cov)
-
-        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
-        # normalization factor of D(m) function
         norm_factor = weight / np.sqrt(det_cov)
-
         diff = pixels - mean
-        # calculating exponent for all pixels at ones according to formula
         exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
-
-        # summation for all components
         likelihoods += norm_factor * exp
 
-    # ensures numerical stability by preventing a log of zero.
-    likelihoods += 1e-10
+    likelihoods += 1e-10  # Ensures numerical stability by preventing a log of zero.
 
     likelihoods = -np.log(likelihoods)
 

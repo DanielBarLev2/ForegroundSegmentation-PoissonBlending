@@ -1,15 +1,28 @@
-from scipy.ndimage import convolve
+import cv2
 import argparse
 import numpy as np
-import cv2
-from scipy.sparse import diags, lil_matrix, csr_matrix
-from const import EIGHT_DIR
+from const import FOUR_DIR
 from scipy.sparse.linalg import spsolve
-
-FOUR_DIR = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+from scipy.sparse import lil_matrix, csr_matrix
 
 
 def create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map):
+    """
+    Creates the matrix A and vector b for solving Poisson image editing equations.
+    :param mask: 2D numpy array representing the binary mask of the region of interest.
+    :param target: 3D numpy array representing the target image (H x W x C).
+    :param source: 3D numpy array representing the source image (H x W x C).
+    :param center: Tuple (center_row, center_col) representing the center of the region of interest in the target image.
+    :param num_roi_pixels: Integer representing the number of pixels in the Region Of Interest.
+    :param mask_indices: List of linear indices of the region of interest pixels in the mask.
+    :param index_map: Dictionary mapping the linear index of each region of interest pixel to its position in the matrix
+    :return: A tuple (A, b) where:
+             - A is a scipy sparse matrix of shape (num_roi_pixels, num_roi_pixels)
+              representing the Poisson equation coefficients.
+             - b is a numpy array of shape (num_roi_pixels, 3)
+              representing the Poisson equation constants for each color channel.
+    """
+
     h, w = mask.shape
     A = lil_matrix((num_roi_pixels, num_roi_pixels))
     b = np.zeros((num_roi_pixels, 3))
@@ -40,6 +53,14 @@ def create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, m
 
 
 def blend_images(source, target, mask, center):
+    """
+   Blends a source image into a target image using Poisson image editing based on a given mask and center position.
+   :param source: 3D numpy array representing the source image (height x width x channels).
+   :param target: 3D numpy array representing the target image (height x width x channels).
+   :param mask: 2D numpy array representing the binary mask of the region of interest.
+   :param center: Tuple (center_col, center_row) representing the center of the region of interest in the target image.
+   :return: 3D numpy array representing the blended image (height x width x channels).
+   """
     mask = mask // 255
 
     mask_indices = np.where(mask.flatten() == 1)[0]

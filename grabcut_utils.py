@@ -11,7 +11,8 @@ def get_trimaps(image: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.nda
     :return: (H' x W', C) foreground and background tree maps.
     """
     mask = mask.reshape(-1)
-    # boolean arrays holding the foreground and background pixels masks.
+
+    # Boolean arrays holding the foreground and background pixels masks.
     fore_mask = np.isin(mask, test_elements=[SOFT_FG]).reshape(-1)
     back_mask = np.isin(mask, test_elements=[HARD_BG, SOFT_BG]).reshape(-1)
 
@@ -30,12 +31,12 @@ def calculate_beta(image: np.ndarray) -> float:
     height, width, _ = image.shape
     sum_squared_diff = 0
 
-    # iterate through each direction
+    # Iterate through each direction
     for dy, dx in EIGHT_DIR:
         squared_diff = squared_color_difference(image=image, dx=dx, dy=dy)
         sum_squared_diff += np.sum(squared_diff)
 
-    # normalize beta
+    # Normalize beta
     beta = sum_squared_diff / (2 * height * width * 8)
 
     return 1 / (2 * beta)
@@ -50,9 +51,9 @@ def squared_color_difference(image: np.ndarray, dx: int, dy: int) -> np.ndarray:
     :param dy: shift along y-axis.
     :return: difference between original image and shifted (by dx, dy) image.
     """
-    # compute the shifted images
+    # Compute the shifted images
     shifted_img = np.roll(image, shift=(dy, dx), axis=(0, 1))
-    # compute the squared differences
+    # Compute the squared differences
     squared_diff = np.sum((image - shifted_img) ** 2, axis=2)
     return squared_diff
 
@@ -66,28 +67,28 @@ def update_parameters(trimap: np.ndarray, gmm: GaussianMixture, n_components: in
     :param n_components: number of Gaussian mixtures to create.
     :return: updated Gaussian Mixture Model (mean, weights, covariances).
     """
-    # evaluate the components' density for each sample.
+    # Evaluate the components' density for each sample.
     predictions = gmm.predict_proba(trimap.reshape(-1, trimap.shape[-1]))
 
     weights = np.sum(predictions, axis=0) + EPSILON
 
-    # means
+    # Means
     means = np.dot(predictions.T, trimap.reshape(-1, trimap.shape[-1])) / weights[:, np.newaxis]
 
-    # covariance
+    # Covariance
     covariances = np.ndarray((n_components,3,3))
     for k in range(n_components):
         diff = trimap.reshape(-1, trimap.shape[-1]) - means[k]
         cov = np.dot((predictions[:, k][:, np.newaxis] * diff).T, diff) / weights[k]
         cov += np.eye(
-            cov.shape[0]) * EPSILON  # ensure that cov does not contain 0 on main diagonal -> inv is positive
+            cov.shape[0]) * EPSILON  # Ensure that cov does not contain 0 on main diagonal -> inv is positive
         covariances[k] = cov
 
     weights /= weights.sum()
 
-    # model update
+    # Model update
     gmm.means_ = means
     gmm.covariances_ = covariances
     gmm.weights_ = weights
-    # gmm.precisions_cholesky_ = np.linalg.cholesky(np.linalg.inv(covariances))
+
     return gmm
