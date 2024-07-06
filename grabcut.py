@@ -7,7 +7,7 @@ import numpy as np
 from const import HARD_BG, SOFT_FG
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
-from grabcut_utils import calculate_beta, get_trimaps, update_parameters
+from grabcut_utils import calculate_beta, get_trimaps, update_parameters, init_gmm_from_kmeans
 from graph_utils import calculate_N_link_weights, format_n_links, calculate_T_link_weights, build_graph
 
 
@@ -80,7 +80,7 @@ class GrabCut:
         k = np.max(np.sum(N_links, axis=2))
 
         for i in range(self.n_iter):
-            print(f"iter {i}")
+            print(f"")
             if i != 0:
                 self.update_GMMs()
 
@@ -112,12 +112,10 @@ class GrabCut:
 
         # Init n GMM components with n clusters for foreground and background
         foregroundGMM = GaussianMixture(n_components=self.gmm_components, covariance_type='full', random_state=0)
-        foregroundGMM.means_ = fore_kmeans.cluster_centers_
-        foregroundGMM.fit(fore_trimap)
+        init_gmm_from_kmeans(foregroundGMM, fore_trimap, fore_kmeans)
 
         backgroundGMM = GaussianMixture(n_components=self.gmm_components, covariance_type='full', random_state=0)
-        backgroundGMM.means_ = back_kmeans.cluster_centers_
-        backgroundGMM.fit(back_trimap)
+        init_gmm_from_kmeans(backgroundGMM, back_trimap, back_kmeans)
 
         return foregroundGMM, backgroundGMM
 
@@ -198,7 +196,7 @@ class GrabCut:
             return True
 
         elif pixels_changed < self.min_pixels_change:
-            print(f'Converged due to pixels {pixels_changed}')
+            print(f'Converged due to {pixels_changed} pixels')
             return True
 
         else:

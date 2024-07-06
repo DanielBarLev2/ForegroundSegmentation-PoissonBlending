@@ -20,9 +20,10 @@ def parse(img_name: str):
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
-    imgs = ['cross', 'banana2', 'banana1', 'bush', 'llama', 'book',
+    imgs = ['bush','cross', 'banana2', 'banana1',  'llama', 'book',
             'flower', 'fullmoon', 'grave', 'memorial', 'sheep', 'stone2', 'teddy']
-
+    img_count = len(imgs)
+    avg_convergence_time, avg_accuracy, avg_jaccard = 0, 0, 0
     for image in imgs:
         print(f'testing *{image}*')
 
@@ -42,17 +43,21 @@ if __name__ == '__main__':
 
         # Run the GrabCutResult algorithm on the image and bounding box
         s = time.process_time()
-        gc = GrabCut(image=img, initial_rect=rect, n_iter=20, gmm_components=3, min_energy_change=1000, lamda=1)
+        gc = GrabCut(image=img, initial_rect=rect, n_iter=20, gmm_components=2, min_energy_change=100, lamda=1)
         mask = gc.grabcut()
 
         mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
         convergence_time = time.process_time() - s
+
+        avg_convergence_time += convergence_time/img_count
         # Print metrics only if requested (valid only for course files)
         if args.eval:
             print(f"{convergence_time=}")
             gt_mask = cv2.imread(f'data/seg_GT/{args.input_name}.bmp', cv2.IMREAD_GRAYSCALE)
             gt_mask: np.ndarray = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
             acc, jac = GrabCut.cal_metric(mask, gt_mask)
+            avg_accuracy += acc/img_count
+            avg_jaccard += jac/img_count
             print(f'Accuracy = {acc}%, Jaccard = {jac}%')
             if jac < 97:
                 print(f' *FAIL* for {image}')
@@ -61,14 +66,16 @@ if __name__ == '__main__':
 
         # Apply the final mask to the input image and display the results
         img_cut = img * (mask[:, :, np.newaxis])
-        cv2.imshow('Original Image', img)
-        cv2.imshow('GrabCutResult Mask', mask * 255)
-        cv2.imshow('GrabCutResult Result', img_cut)
-
-        img_save_path = f'data/results/GrabCutResult/{input_path.split("/")[-1].split(".")[0] + "_result.png"}'
-        mask_save_path = f'data/results/GrabCutMasks/{input_path.split("/")[-1].split(".")[0] + "_mask.png"}'
+        # cv2.imshow('Original Image', img)
+        # cv2.imshow('GrabCutResult Mask', mask * 255)
+        # cv2.imshow('GrabCutResult Result', img_cut)
+        #
+        # img_save_path = f'data/results/GrabCutResult/{input_path.split("/")[-1].split(".")[0] + "_result.png"}'
+        # mask_save_path = f'data/results/GrabCutMasks/{input_path.split("/")[-1].split(".")[0] + "_mask.png"}'
         # cv2.imwrite(img_save_path, img_cut, )
         # cv2.imwrite(mask_save_path, mask*255)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
         print("- - - - - - - - - - - - -")
+
+    print(avg_convergence_time)
+    print(avg_accuracy)
+    print(avg_jaccard)

@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.mixture import GaussianMixture
 from const import EIGHT_DIR, HARD_BG, SOFT_FG, SOFT_BG, EPSILON
+from sklearn.cluster import KMeans
 
 
 def get_trimaps(image: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -92,3 +93,18 @@ def update_parameters(trimap: np.ndarray, gmm: GaussianMixture, n_components: in
     gmm.weights_ = weights
 
     return gmm
+
+
+def init_gmm_from_kmeans(gmm: GaussianMixture, trimap: np.ndarray, kmeans_model: object):
+    """
+    Initializes a Gaussian Mixture Model (GMM) using the centers and labels from a KMeans model.
+    :param gmm: Gaussian Mixture Model.
+    :param trimap: (H, W , C) RGB image.
+    :param kmeans_model: The fitted KMeans model used to initialize the GMM.
+    :return:
+    """
+    gmm_count = kmeans_model.n_clusters
+    gmm.means_ = kmeans_model.cluster_centers_
+    gmm.covariances_ = np.array([np.cov(trimap[kmeans_model.labels_ == i].T) for i in range(gmm_count)])
+    gmm.covariances_ += np.eye(trimap.shape[1]) * EPSILON  # Add a small value to the diagonal for numerical stability
+    gmm.fit(trimap)
