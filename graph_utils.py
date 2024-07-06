@@ -138,7 +138,7 @@ def build_graph(h: int, w: int, fg_probs: np.ndarray, bg_probs: np.ndarray, N_li
                 N_link_weights: np.ndarray) -> ig.Graph:
     """
     Helper function to build the graph for mincut calculation.
-    :param N_link_edges: # @todo: add docstring
+    :param N_link_edges: A NumPy array containing the weights of N-links. Shape is (height, width, 8).
     :param h: height of the image.
     :param w: width of the image.
     :param fg_probs: foreground probabilities for each pixel.
