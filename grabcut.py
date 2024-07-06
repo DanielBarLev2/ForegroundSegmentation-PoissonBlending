@@ -4,7 +4,7 @@ import cProfile
 import argparse
 import warnings
 import numpy as np
-from const import HARD_BG, SOFT_FG
+from const import HARD_BG, SOFT_FG, SOFT_BG, HARD_FG
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from grabcut_utils import calculate_beta, get_trimaps, update_parameters, init_gmm_from_kmeans
@@ -80,7 +80,6 @@ class GrabCut:
         k = np.max(np.sum(N_links, axis=2))
 
         for i in range(self.n_iter):
-            print(f"iter {i}")
             if i != 0:
                 self.update_GMMs()
 
@@ -95,6 +94,8 @@ class GrabCut:
                 print(f'Converged in {i + 1}/{self.n_iter} iterations')
                 break
 
+        self.mask[self.mask == SOFT_BG] = HARD_BG
+        self.mask[self.mask == SOFT_FG] = HARD_FG
         return self.mask
 
     def initalize_GMMs(self, trimap: tuple[np.ndarray, np.ndarray]) -> tuple[GaussianMixture, GaussianMixture]:
@@ -172,6 +173,7 @@ class GrabCut:
         :param image_mask: Current mask indicating foreground, background, and unknown regions.
         :return: Updated mask with foreground and background regions marked.
         """
+        orig_bgd = image_mask == HARD_BG
         fg_segment, bg_segment = mincut_sets
         fg_indices = np.array(fg_segment)
         bg_indices = np.array(bg_segment)
@@ -180,7 +182,10 @@ class GrabCut:
         image_mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
 
         # Set background (outside) based on mincut result
-        image_mask[bg_indices[:, 0], bg_indices[:, 1]] = HARD_BG
+        image_mask[bg_indices[:, 0], bg_indices[:, 1]] = SOFT_BG
+
+        image_mask[orig_bgd] = HARD_BG
+
         return image_mask
 
     def check_convergence(self, old_pixels_count):
