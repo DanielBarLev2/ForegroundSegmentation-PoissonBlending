@@ -8,53 +8,89 @@ from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from grabcut_utils import calculate_beta, get_trimaps, update_parameters
 from graph_utils import calculate_N_link_weights, format_n_links, calculate_T_link_weights, build_graph
-from const import HARD_BG, SOFT_FG
+from const import HARD_BG, SOFT_FG, HARD_FG, SOFT_BG
 
 
 class GrabCut:
     def __init__(self,
                  image: np.ndarray,
-                 image_mask: np.ndarray,
+                 initial_rect: tuple,
                  n_iter: int = 10,
                  gmm_components: int = 5,
-                 eps: float = 1000,
+                 min_energy_change: float = 1000,
                  lamda: float = 1):
+        # set image
+        self.image = image
 
+        # set mask and subject pixels count using the initial mask
+        self.mask: np.ndarray
+        self.subject_pixels_count = 0
+        self.__set_mask(self.mask_from_rect(initial_rect, self.image.shape))
+
+        self.energy_list = []
+
+        # GrabCut initialization parameters
         self.n_iter = n_iter
         self.gmm_components = gmm_components
-        self.eps = eps
+
+        # GrabCut calculations parameters
         self.lamda = lamda
-        self.energy_list = []
         self.beta = calculate_beta(image=image)
 
-        fore_trimap, back_trimap = get_trimaps(image=image.reshape(-1, 3), mask=image_mask)
+        # convergence parameters
+        self.min_energy_change = min_energy_change
+        self.min_pixels_change = 0.0001 * image.shape[0] * image.shape[1]
+
+        fore_trimap, back_trimap = get_trimaps(image=image.reshape(-1, 3), mask=self.mask)
         self.foregroundGMM, self.backgroundGMM = self.initalize_GMMs(trimap=(fore_trimap, back_trimap))
 
-    def grabcut(self, image: np.ndarray, image_mask: np.ndarray):
+    def __set_mask(self, image_mask):
+        self.mask = image_mask
+        self.subject_pixels_count = np.sum(self.mask == SOFT_FG)
+
+    @staticmethod
+    def mask_from_rect(rect: tuple[int, int, int, int], img_shape: np.shape):
+        # assign initial labels to the pixels based on the bounding box
+        mask = np.zeros(img_shape[:2], dtype=np.uint8) * HARD_BG
+
+        x1, y1, x2, y2 = rect
+        # Initialize the inner square to Foreground
+        mask[y1: y2, x1:x2] = SOFT_FG
+
+        # todo: should we set the central pixel as HARD_FG? some people wrote it on whatsapp
+        # mask[(y2 - y1) // 2, (x2 - x1) // 2] = HARD_FG
+        return mask
+
+    def grabcut(self) -> np.ndarray:
         """
 
         :param image:
         :param image_mask:
         :return:
         """
-        N_link_weights = self.lamda * calculate_N_link_weights(image=image, beta=self.beta)
-        N_link_edges, N_link_capacities = format_n_links(N_link_weights, image.shape[0], image.shape[1])
-        k = np.max(N_link_weights)
+        N_links = self.lamda * calculate_N_link_weights(image=self.image, beta=self.beta)
+        N_link_edges, N_link_capacities = format_n_links(N_links, self.image.shape[0], self.image.shape[1])
+        k = np.max(np.sum(N_links, axis=2))
 
         for i in range(self.n_iter):
+            print(f"iter {i}")
             if i != 0:
-                self.update_GMMs(image, image_mask)
+                self.update_GMMs()
 
-            mincut_sets = self.calculate_mincut(image, image_mask, N_link_edges, N_link_capacities, k)
+            mincut_sets = self.calculate_mincut(N_link_edges, N_link_capacities, k)
 
-            image_mask = self.update_mask(mincut_sets, image_mask)
+            image_mask = GrabCut.update_mask(mincut_sets, self.mask)
 
-            if self.check_convergence():
+            # get old value before change
+            subject_pixels_count = self.subject_pixels_count
+            self.__set_mask(image_mask)
+
+            if self.check_convergence(subject_pixels_count):
                 print(f'Converged in {i + 1}/{self.n_iter} iterations')
                 break
 
-        # Return the final mask and the GMMs
-        return image_mask
+        # Return the final mask
+        return self.mask
 
     def initalize_GMMs(self, trimap: tuple[np.ndarray, np.ndarray]) -> tuple[GaussianMixture, GaussianMixture]:
         """
@@ -79,21 +115,19 @@ class GrabCut:
 
         return foregroundGMM, backgroundGMM
 
-    def update_GMMs(self, image: np.ndarray, image_mask: np.ndarray):
+    def update_GMMs(self):
         """
         updates foreground and background Gaussian Mixture Models from a new mask.
         :param image: (H, W, C) RGB image.
         :param image_mask: (H' x W', C) rectangle representing the (inside) foreground and (outside) background pixels.
         :return: updated foreground and background Gaussian Mixture Models.
         """
-        fore_trimap, back_trimap = get_trimaps(image=image.reshape(-1, 3), mask=image_mask)
+        fore_trimap, back_trimap = get_trimaps(image=self.image.reshape(-1, 3), mask=self.mask)
 
         self.foregroundGMM = update_parameters(fore_trimap, self.foregroundGMM, self.gmm_components)
         self.backgroundGMM = update_parameters(back_trimap, self.backgroundGMM, self.gmm_components)
-
     def calculate_mincut(self,
-                         image: np.ndarray,
-                         image_mask: np.ndarray,
+
                          N_link_edges: np.ndarray,
                          N_link_weights: np.ndarray,
                          k) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
@@ -107,10 +141,10 @@ class GrabCut:
 
         :return: Tuple containing foreground/background segments and the energy value.
         """
-        height, width, channel = image.shape
+        height, width, channel = self.image.shape
 
-        fg_probs, bg_probs = calculate_T_link_weights(image=image,
-                                                      image_mask=image_mask,
+        fg_probs, bg_probs = calculate_T_link_weights(image=self.image,
+                                                      image_mask=self.mask,
                                                       fgGMM=self.foregroundGMM,
                                                       bgGMM=self.backgroundGMM,
                                                       K=k)
@@ -142,15 +176,17 @@ class GrabCut:
         # set foreground (inside) based on mincut result
         image_mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
 
-        # set background (outside) based on mincut result todo: why hard?
+        # set background (outside) based on mincut result
         image_mask[bg_indices[:, 0], bg_indices[:, 1]] = HARD_BG
-
         return image_mask
 
-    # todo: create an intelligent convergence check
-    def check_convergence(self):
-        if len(self.energy_list) > 1 and abs(self.energy_list[-1] - self.energy_list[-2]) < self.eps:
+    def check_convergence(self, old_pixels_count):
+        pixels_changed = old_pixels_count - self.subject_pixels_count
+        if len(self.energy_list) > 1 and abs(self.energy_list[-1] - self.energy_list[-2]) < self.min_energy_change:
             print(f'Converged at energy {self.energy_list[-1]}')
+            return True
+        elif pixels_changed < self.min_pixels_change:
+            print(f'Converged due to pixels {pixels_changed}')
             return True
         else:
             return False
@@ -183,7 +219,7 @@ class GrabCut:
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_name', type=str, default='flower', help='name of image from the course files')
+    parser.add_argument('--input_name', type=str, default='banana1', help='name of image from the course files')
     parser.add_argument('--eval', type=int, default=1, help='calculate the metrics')
     parser.add_argument('--input_img_path', type=str, default='', help='if you wish to use your own img_path')
     parser.add_argument('--use_file_rect', type=int, default=1, help='Read rect from course files')
@@ -211,25 +247,16 @@ if __name__ == '__main__':
 
     img = cv2.imread(input_path)
 
-    # assign initial labels to the pixels based on the bounding box
-    mask = np.zeros(img.shape[:2], dtype=np.uint8) * HARD_BG
-    # Convert from absolute coordinates
-    x, y, w, h = rect
-    w -= x
-    h -= y
-    # Initialize the inner square to Foreground
-    mask[y:y + h, x:x + w] = SOFT_FG
-
     # Run the GrabCutResult algorithm on the image and bounding box
-    grabcut = GrabCut(image=img, image_mask=mask, n_iter=5, gmm_components=5, eps=100, lamda=1)
-    mask = grabcut.grabcut(image=img, image_mask=mask)
+    grabcut = GrabCut(image=img, initial_rect=rect, n_iter=20, gmm_components=5, min_energy_change=100, lamda=1)
+    mask = grabcut.grabcut()
 
     mask = cv2.threshold(mask, 0, 1, cv2.THRESH_BINARY)[1]
 
     # Print metrics only if requested (valid only for course files)
     if args.eval:
         gt_mask = cv2.imread(f'data/seg_GT/{args.input_name}.bmp', cv2.IMREAD_GRAYSCALE)
-        gt_mask = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
+        gt_mask: np.ndarray = cv2.threshold(gt_mask, 0, 1, cv2.THRESH_BINARY)[1]
         acc, jac = grabcut.cal_metric(mask, gt_mask)
         print(f'Accuracy={acc}, Jaccard={jac}')
 
