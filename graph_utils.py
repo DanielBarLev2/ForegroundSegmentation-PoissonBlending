@@ -2,7 +2,7 @@ import numpy as np
 import igraph as ig
 from sklearn.mixture import GaussianMixture
 from grabcut_utils import squared_color_difference
-from const import EIGHT_DIR, HARD_BG, SOFT_FG, HARD_FG, SOFT_BG
+from const import EIGHT_DIR, HARD_BG, HARD_FG, SOFT_FG, SOFT_BG
 
 
 def format_n_links(N_link_weights, height, width):
@@ -68,26 +68,33 @@ def calculate_likelihood(image: np.ndarray, gmm: GaussianMixture) -> np.ndarray:
     :return: (H, W) - Likelihood for each pixel
     """
     h, w, c = image.shape
+    # create pixels vector [[R,G,B], [R,G,B], ...]
     pixels = image.reshape(-1, 3)
+    # initiate likelihood matrix with size of image
     likelihoods = np.zeros((h, w))
 
     for i in range(gmm.n_components):
+        # get model parameters
         mean = gmm.means_[i]
         cov = gmm.covariances_[i]
         weight = gmm.weights_[i]
         inv_cov = np.linalg.inv(cov)
         det_cov = np.linalg.det(cov)
 
+        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
+        # normalization factor of D(m) function
         norm_factor = weight / np.sqrt(det_cov)
 
-        # computes D(m) for all pixels at once. equivalent to the per_pixel calculation as shown in the article
         diff = pixels - mean
+        # calculating exponent for all pixels at ones according to formula
         exp = np.exp(-0.5 * np.sum(diff @ inv_cov * diff, axis=1)).reshape(h, w)
 
+        # summation for all components
         likelihoods += norm_factor * exp
 
     # ensures numerical stability by preventing a log of zero.
     likelihoods += 1e-10
+
     likelihoods = -np.log(likelihoods)
 
     return likelihoods
