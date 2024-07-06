@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import cv2
 from scipy.sparse import diags, lil_matrix, csr_matrix
+from const import EIGHT_DIR
 from scipy.sparse.linalg import spsolve
 
 FOUR_DIR = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -32,7 +33,9 @@ def create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, m
             else:
                 target_row = (neighbor_row - h // 2) + center_row
                 target_col = (neighbor_col - w // 2) + center_col
-                b[index] -= target[target_row, target_col]
+                if 0 <= target_row < target.shape[0] and 0 <= target_col < target.shape[1]:
+                    b[index] -= target[target_row, target_col]
+
     return csr_matrix(A), b
 
 
@@ -46,7 +49,8 @@ def blend_images(source, target, mask, center):
     index_map = {linear_index: idx for idx, linear_index in enumerate(mask_indices)}
 
     A, b = create_A_matrix_and_b_vector(mask, target, source, center, num_roi_pixels, mask_indices, index_map)
-    X = spsolve(A, b).clip(0, 255)
+    X = spsolve(A, b)
+    X = X.clip(0, 255)
 
     result = target.copy()
     rows, cols = mask.shape
@@ -64,9 +68,9 @@ def blend_images(source, target, mask, center):
 
 def parse():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--src_path', type=str, default='./data/imgs/fullmoon.jpg', help='image file path')
-    parser.add_argument('--mask_path', type=str, default='./data/seg_GT/fullmoon.bmp', help='mask file path')
-    parser.add_argument('--tgt_path', type=str, default='./data/bg/wall.jpg', help='mask file path')
+    parser.add_argument('--src_path', type=str, default='./data/imgs/bush.jpg', help='image file path')
+    parser.add_argument('--mask_path', type=str, default='./data/seg_GT/bush.bmp', help='mask file path')
+    parser.add_argument('--tgt_path', type=str, default='./data/bg/grass_mountains.jpeg', help='mask file path')
     return parser.parse_args()
 
 
