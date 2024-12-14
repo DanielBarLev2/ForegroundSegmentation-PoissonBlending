@@ -180,7 +180,6 @@ class GrabCut:
 
         # Set foreground (inside) based on mincut result
         image_mask[fg_indices[:, 0], fg_indices[:, 1]] = SOFT_FG
-
         # Set background (outside) based on mincut result
         image_mask[bg_indices[:, 0], bg_indices[:, 1]] = SOFT_BG
 
@@ -296,5 +295,3 @@ if __name__ == '__main__':
 
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
-    #this is a test
